@@ -1,12 +1,5 @@
 "use client";
 // app/(dashboard)/review/upload/page.tsx
-// ============================================================
-// REVIEW UPLOAD PAGE
-// - Drag & drop or click to upload PDF or DOCX
-// - Extracts text client-side (pdfjs-dist / mammoth)
-// - Sends extracted text to /api/ai/review-resume
-// - Redirects to /review/[id] with results in sessionStorage
-// ============================================================
 
 import {
   useState,
@@ -26,7 +19,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { toast } from "sonner";
 
 // ─── Types ────────────────────────────────────────────────────
-type StepType = 0 | 1 | 2 | 3; // 0=waiting, 1=extracting, 2=reviewing, 3=done
+type StepType = 0 | 1 | 2 | 3;
 
 interface StepLabelItem {
   n: number;
@@ -47,11 +40,8 @@ async function extractPDF(file: File): Promise<string> {
     reader.onload = async (e: ProgressEvent<FileReader>) => {
       try {
         const typedArray = new Uint8Array(e.target?.result as ArrayBuffer);
-
-        // Dynamically import pdfjs
         const pdfjsLib = await import("pdfjs-dist");
 
-        // Use local worker file from node_modules to avoid CDN/CORS issues
         pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
           "pdfjs-dist/build/pdf.worker.min.mjs",
           import.meta.url
@@ -129,24 +119,22 @@ function StepDot({ n, label, active, done }: StepDotProps): ReactElement {
   );
 }
 
-// ─── Inner component that uses useSearchParams ─────────────────
+// ─── MAIN COMPONENT ────────────────────────────────────────────
 function ReviewUploadForm(): ReactElement {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { user, getIdToken } = useAuth();
 
-  const resumeId = searchParams.get("resumeId"); // optional — from dashboard
+  const resumeId = searchParams.get("resumeId");
 
   const [dragOver, setDragOver] = useState<boolean>(false);
   const [file, setFile] = useState<File | null>(null);
   const [step, setStep] = useState<StepType>(0);
-  // 0 = waiting, 1 = extracting, 2 = reviewing, 3 = done
   const [error, setError] = useState<string>("");
   const [progress, setProgress] = useState<number>(0);
 
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // ── Handle file selection ──────────────────────────────────
   const handleFile = useCallback((selected: File): void => {
     const err = validateFile(selected);
     if (err) {
@@ -175,33 +163,18 @@ function ReviewUploadForm(): ReactElement {
     [handleFile]
   );
 
-  // ── Animate progress bar ──────────────────────────────────
   useEffect(() => {
-    if (step === 0) {
-      setProgress(0);
-      return;
-    }
-    if (step === 1) {
-      setProgress(30);
-      return;
-    }
-    if (step === 2) {
-      setProgress(65);
-      return;
-    }
-    if (step === 3) {
-      setProgress(100);
-      return;
-    }
+    if (step === 0) setProgress(0);
+    else if (step === 1) setProgress(30);
+    else if (step === 2) setProgress(65);
+    else if (step === 3) setProgress(100);
   }, [step]);
 
-  // ── Run review ─────────────────────────────────────────────
   const handleReview = useCallback(async (): Promise<void> => {
     if (!file || !user) return;
     setError("");
 
     try {
-      // Step 1 — extract text
       setStep(1);
       let resumeText = "";
 
@@ -221,7 +194,6 @@ function ReviewUploadForm(): ReactElement {
         resumeText = resumeText.slice(0, 15000);
       }
 
-      // Step 2 — AI review
       setStep(2);
 
       const token = await getIdToken();
@@ -234,7 +206,6 @@ function ReviewUploadForm(): ReactElement {
         Authorization: `Bearer ${token}`,
       };
 
-      // Pass resumeId header if we came from the dashboard
       if (resumeId) {
         headers["x-resume-id"] = resumeId;
       }
@@ -261,11 +232,8 @@ function ReviewUploadForm(): ReactElement {
         throw new Error(data.error ?? "Review failed.");
       }
 
-      // Step 3 — store results and redirect
       setStep(3);
 
-      // Store in sessionStorage — review results page reads this
-      // We use sessionStorage (not URL params) to avoid exposing the data in the URL
       const reviewId = crypto.randomUUID();
       sessionStorage.setItem(
         `review:${reviewId}`,
@@ -277,7 +245,6 @@ function ReviewUploadForm(): ReactElement {
         })
       );
 
-      // Small delay so user sees the 100% state
       await new Promise((r) => setTimeout(r, 600));
 
       router.push(`/review/${reviewId}`);
@@ -392,7 +359,6 @@ function ReviewUploadForm(): ReactElement {
         .drop-zone:hover,
         .drop-zone.over { border-color: var(--gold-border); background: var(--gold-dim); }
         .drop-zone.has-file { border-color: var(--gold-border); border-style: solid; }
-        .drop-zone.processing { cursor: not-allowed; opacity: 0.7; pointer-events: none; }
 
         .drop-icon {
           width: 52px; height: 52px; margin: 0 auto var(--space-4);
@@ -476,7 +442,6 @@ function ReviewUploadForm(): ReactElement {
       <div className="bg-grain" />
 
       <div className="review-page">
-        {/* ── Topbar ─────────────────────────────────────── */}
         <header className="topbar">
           <Link href="/" className="topbar-logo">
             Resu<span>MAI</span>
@@ -495,7 +460,6 @@ function ReviewUploadForm(): ReactElement {
           </Link>
         </header>
 
-        {/* ── Main ───────────────────────────────────────── */}
         <main className="review-content">
           <div className="review-card">
             <h1 className="review-heading">Review your resume.</h1>
@@ -504,7 +468,6 @@ function ReviewUploadForm(): ReactElement {
               across 8 key categories — in under 30 seconds.
             </p>
 
-            {/* Steps */}
             <div className="steps-row">
               {stepLabels.map((s, i) => (
                 <Fragment key={s.n}>
@@ -521,12 +484,10 @@ function ReviewUploadForm(): ReactElement {
               ))}
             </div>
 
-            {/* Progress bar */}
             <div className="progress-wrap">
               <div className="progress-bar" style={{ width: `${progress}%` }} />
             </div>
 
-            {/* Processing state */}
             {isProcessing ? (
               <div className="processing-state">
                 <div className="processing-spinner" />
@@ -542,7 +503,6 @@ function ReviewUploadForm(): ReactElement {
               </div>
             ) : (
               <>
-                {/* Drop zone */}
                 <div
                   className={`drop-zone${dragOver ? " over" : ""}${
                     file ? " has-file" : ""
@@ -612,7 +572,6 @@ function ReviewUploadForm(): ReactElement {
                   )}
                 </div>
 
-                {/* File selected row */}
                 {file && (
                   <div className="file-selected">
                     <div className="file-icon">
@@ -668,7 +627,6 @@ function ReviewUploadForm(): ReactElement {
                   </div>
                 )}
 
-                {/* Error */}
                 {error && (
                   <div className="review-error">
                     <svg
@@ -687,7 +645,6 @@ function ReviewUploadForm(): ReactElement {
                   </div>
                 )}
 
-                {/* Submit button */}
                 <button
                   className="btn btn-primary"
                   style={{ width: "100%", marginTop: "var(--space-5)", justifyContent: "center" }}
@@ -699,7 +656,6 @@ function ReviewUploadForm(): ReactElement {
               </>
             )}
 
-            {/* What we check */}
             <div className="checks-grid">
               {[
                 "ATS Compatibility",
@@ -717,7 +673,6 @@ function ReviewUploadForm(): ReactElement {
               ))}
             </div>
 
-            {/* Free tier note */}
             {!user?.isPremium && (
               <div className="free-note">
                 <svg
@@ -755,28 +710,9 @@ function ReviewUploadForm(): ReactElement {
   );
 }
 
-// ─── Loading Fallback ─────────────────────────────────────────
-function LoadingFallback(): ReactElement {
-  return (
-    <div
-      style={{
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        minHeight: "100vh",
-        backgroundColor: "var(--bg-primary)",
-      }}
-    >
-      <div className="processing-spinner" />
-    </div>
-  );
-}
+// ─── EXPORT (Dynamic rendering - no prerendering) ──────────────
+export const dynamic = "force-dynamic";
 
-// ─── Page Component (wraps with Suspense) ──────────────────────
 export default function ReviewUploadPage(): ReactElement {
-  return (
-    <Suspense fallback={<LoadingFallback />}>
-      <ReviewUploadForm />
-    </Suspense>
-  );
+  return <ReviewUploadForm />;
 }
