@@ -217,7 +217,7 @@ function LoginForm() {
         <div className="auth-card">
 
           <Link href="/" className="auth-logo">
-            Resu<span>MAI</span>
+            Resu<span>fii</span>
           </Link>
 
           <h1 className="auth-heading">Welcome back</h1>

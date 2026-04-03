@@ -392,7 +392,7 @@ export default function LandingPage() {
 
       {/* ── Navbar ─────────────────────────────────────────── */}
       <nav className="nav">
-        <Link href="/" className="nav-logo">Resu<span>MAI</span></Link>
+        <Link href="/" className="nav-logo">Resu<span>fii</span></Link>
         <div className="nav-links">
           <a href="#features">Features</a>
           <a href="#how-it-works">How it works</a>
@@ -533,7 +533,7 @@ export default function LandingPage() {
 
       {/* ── Footer ─────────────────────────────────────────── */}
       <footer className="footer">
-        <Link href="/" className="footer-logo">Resu<span>MAI</span></Link>
+        <Link href="/" className="footer-logo">Resu<span>fii</span></Link>
         <div className="footer-links">
           <a href="#features">Features</a>
           <a href="#how-it-works">How it works</a>
