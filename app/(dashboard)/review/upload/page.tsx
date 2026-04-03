@@ -119,7 +119,7 @@ function StepDot({ n, label, active, done }: StepDotProps): ReactElement {
   );
 }
 
-// ─── MAIN COMPONENT ────────────────────────────────────────────
+// ─── INNER FORM (uses useSearchParams — must be inside Suspense) ──
 function ReviewUploadForm(): ReactElement {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -710,9 +710,38 @@ function ReviewUploadForm(): ReactElement {
   );
 }
 
-// ─── EXPORT (Dynamic rendering - no prerendering) ──────────────
+// ─── LOADING FALLBACK ─────────────────────────────────────────
+function ReviewUploadFallback(): ReactElement {
+  return (
+    <div
+      style={{
+        minHeight: "100vh",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+      }}
+    >
+      <div
+        style={{
+          width: 32,
+          height: 32,
+          border: "3px solid var(--bg-elevated)",
+          borderTopColor: "var(--gold)",
+          borderRadius: "50%",
+          animation: "spin 0.8s linear infinite",
+        }}
+      />
+    </div>
+  );
+}
+
+// ─── EXPORT ───────────────────────────────────────────────────
 export const dynamic = "force-dynamic";
 
 export default function ReviewUploadPage(): ReactElement {
-  return <ReviewUploadForm />;
+  return (
+    <Suspense fallback={<ReviewUploadFallback />}>
+      <ReviewUploadForm />
+    </Suspense>
+  );
 }
