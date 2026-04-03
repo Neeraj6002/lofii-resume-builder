@@ -1,7 +1,7 @@
 "use client";
 // app/(dashboard)/dashboard/page.tsx
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, Suspense } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/hooks/useAuth";
@@ -41,7 +41,7 @@ function templateLabel(t: string): string {
 function ResumeCardItem({ resume, onDelete }: { resume: ResumeCard; onDelete: (id: string) => void }) {
   const [deleting, setDeleting] = useState(false);
   const [confirm,  setConfirm]  = useState(false);
-  const { user, getIdToken } = useAuth();
+  const { getIdToken } = useAuth();
 
   async function handleDelete() {
     if (!confirm) { setConfirm(true); return; }
@@ -98,9 +98,17 @@ function ResumeCardItem({ resume, onDelete }: { resume: ResumeCard; onDelete: (i
       <div className="resume-actions">
         <Link href={`/resume/${resume.id}/edit`} className="btn btn-secondary btn-sm" style={{ flex: 1, justifyContent: "center" }}>Edit</Link>
         <Link href={`/review/upload?resumeId=${resume.id}`} className="btn btn-ghost btn-sm" style={{ flex: 1, justifyContent: "center" }}>Review</Link>
-        <button className={`btn btn-sm ${confirm ? "btn-danger" : "btn-ghost"}`} onClick={handleDelete} disabled={deleting} title={confirm ? "Click again to confirm" : "Delete"} style={{ flexShrink: 0 }}>
+        <button
+          className={`btn btn-sm ${confirm ? "btn-danger" : "btn-ghost"}`}
+          onClick={handleDelete}
+          disabled={deleting}
+          title={confirm ? "Click again to confirm" : "Delete"}
+          style={{ flexShrink: 0 }}
+        >
           {deleting ? <span className="spinner" style={{ width: 14, height: 14 }} /> : confirm ? "Sure?" : (
-            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 3.5h10M5.5 3.5V2h3v1.5M6 6v4M8 6v4M3 3.5l.7 8h6.6l.7-8" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+              <path d="M2 3.5h10M5.5 3.5V2h3v1.5M6 6v4M8 6v4M3 3.5l.7 8h6.6l.7-8" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
           )}
         </button>
       </div>
@@ -126,7 +134,8 @@ function EmptyState() {
   );
 }
 
-export default function DashboardPage() {
+// ─── INNER COMPONENT (uses useSearchParams — must be inside Suspense) ───
+function DashboardContent() {
   const router       = useRouter();
   const searchParams = useSearchParams();
   const { user, loading: authLoading, signOut, getIdToken } = useAuth();
@@ -293,7 +302,13 @@ export default function DashboardPage() {
           <div className="topbar-right">
             {user?.isPremium && <div className="premium-pill">✦ Premium</div>}
             <div className="avatar-wrap">
-              <div className="avatar" onClick={() => setMenuOpen(v => !v)} role="button" tabIndex={0} onKeyDown={e => e.key === "Enter" && setMenuOpen(v => !v)}>
+              <div
+                className="avatar"
+                onClick={() => setMenuOpen(v => !v)}
+                role="button"
+                tabIndex={0}
+                onKeyDown={e => e.key === "Enter" && setMenuOpen(v => !v)}
+              >
                 {initials}
               </div>
               {menuOpen && (
@@ -305,11 +320,18 @@ export default function DashboardPage() {
                       <div className="menu-email">{user?.email}</div>
                     </div>
                     <Link href="/dashboard" className="menu-item" onClick={() => setMenuOpen(false)}>
-                      <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><rect x="1" y="1" width="5" height="5" rx="1" stroke="currentColor" strokeWidth="1.2"/><rect x="8" y="1" width="5" height="5" rx="1" stroke="currentColor" strokeWidth="1.2"/><rect x="1" y="8" width="5" height="5" rx="1" stroke="currentColor" strokeWidth="1.2"/><rect x="8" y="8" width="5" height="5" rx="1" stroke="currentColor" strokeWidth="1.2"/></svg>
+                      <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                        <rect x="1" y="1" width="5" height="5" rx="1" stroke="currentColor" strokeWidth="1.2"/>
+                        <rect x="8" y="1" width="5" height="5" rx="1" stroke="currentColor" strokeWidth="1.2"/>
+                        <rect x="1" y="8" width="5" height="5" rx="1" stroke="currentColor" strokeWidth="1.2"/>
+                        <rect x="8" y="8" width="5" height="5" rx="1" stroke="currentColor" strokeWidth="1.2"/>
+                      </svg>
                       Dashboard
                     </Link>
                     <button className="menu-item danger" onClick={handleSignOut}>
-                      <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M5 7h7M9 5l2 2-2 2M9 2H3a1 1 0 00-1 1v8a1 1 0 001 1h6" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                      <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                        <path d="M5 7h7M9 5l2 2-2 2M9 2H3a1 1 0 00-1 1v8a1 1 0 001 1h6" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
+                      </svg>
                       Sign out
                     </button>
                   </div>
@@ -329,7 +351,12 @@ export default function DashboardPage() {
                   <div className="banner-sub">One-time payment of $2 — review 1 full resume and generate content for 1 full resume.</div>
                 </div>
               </div>
-              <button className={`btn btn-primary btn-sm${upgrading ? " btn-loading" : ""}`} onClick={handleUpgrade} disabled={upgrading} style={{ flexShrink: 0 }}>
+              <button
+                className={`btn btn-primary btn-sm${upgrading ? " btn-loading" : ""}`}
+                onClick={handleUpgrade}
+                disabled={upgrading}
+                style={{ flexShrink: 0 }}
+              >
                 {upgrading ? "" : "Upgrade to Premium →"}
               </button>
             </div>
@@ -344,11 +371,15 @@ export default function DashboardPage() {
             </div>
             <div className="dash-actions">
               <Link href="/review/upload" className="btn btn-secondary btn-sm">
-                <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1v8M4 4L7 1l3 3M2 10v2a1 1 0 001 1h8a1 1 0 001-1v-2" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                  <path d="M7 1v8M4 4L7 1l3 3M2 10v2a1 1 0 001 1h8a1 1 0 001-1v-2" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
                 Review Resume
               </Link>
               <Link href="/resume/create" className="btn btn-primary btn-sm">
-                <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 2v10M2 7h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                  <path d="M7 2v10M2 7h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                </svg>
                 New Resume
               </Link>
             </div>
@@ -372,7 +403,10 @@ export default function DashboardPage() {
               ) : (
                 resumes.map((r, i) => (
                   <div key={r.id} style={{ animationDelay: `${i * 60}ms` }}>
-                    <ResumeCardItem resume={r} onDelete={id => setResumes(prev => prev.filter(x => x.id !== id))} />
+                    <ResumeCardItem
+                      resume={r}
+                      onDelete={id => setResumes(prev => prev.filter(x => x.id !== id))}
+                    />
                   </div>
                 ))
               )}
@@ -381,5 +415,23 @@ export default function DashboardPage() {
         </main>
       </div>
     </>
+  );
+}
+
+// ─── LOADING FALLBACK ─────────────────────────────────────────
+function DashboardFallback() {
+  return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh" }}>
+      <span className="spinner" style={{ width: 28, height: 28 }} />
+    </div>
+  );
+}
+
+// ─── EXPORT ───────────────────────────────────────────────────
+export default function DashboardPage() {
+  return (
+    <Suspense fallback={<DashboardFallback />}>
+      <DashboardContent />
+    </Suspense>
   );
 }
