@@ -8,7 +8,7 @@
 // - Redirects to /review/[id] with results in sessionStorage
 // ============================================================
 
-import { useState, useRef, useCallback, useEffect, Fragment } from "react";
+import { useState, useRef, useCallback, useEffect, Fragment, Suspense } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/hooks/useAuth";
@@ -229,8 +229,16 @@ export default function ReviewUploadPage() {
   ];
 
   return (
-    <>
-      <style>{`
+    <Suspense fallback={
+      <div style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        minHeight: '100vh', backgroundColor: 'var(--bg-primary)'
+      }}>
+        <div className="processing-spinner" />
+      </div>
+    }>
+      <>
+        <style>{`
         .review-page {
           min-height: 100vh;
           display: flex; flex-direction: column;
@@ -581,5 +589,5 @@ export default function ReviewUploadPage() {
         </main>
       </div>
     </>
-  );
+  </Suspense>);
 }
