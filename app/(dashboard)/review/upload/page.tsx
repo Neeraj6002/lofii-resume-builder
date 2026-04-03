@@ -92,8 +92,8 @@ function StepDot({ n, label, active, done }: {
   );
 }
 
-// ─── Page ────────────────────────────────────────────────────
-export default function ReviewUploadPage() {
+// ─── Inner component that uses useSearchParams ─────────────────
+function ReviewUploadForm() {
   const router       = useRouter();
   const searchParams = useSearchParams();
   const { user, getIdToken }     = useAuth();
@@ -229,16 +229,8 @@ export default function ReviewUploadPage() {
   ];
 
   return (
-    <Suspense fallback={
-      <div style={{
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        minHeight: '100vh', backgroundColor: 'var(--bg-primary)'
-      }}>
-        <div className="processing-spinner" />
-      </div>
-    }>
-      <>
-        <style>{`
+    <>
+      <style>{`
         .review-page {
           min-height: 100vh;
           display: flex; flex-direction: column;
@@ -589,5 +581,21 @@ export default function ReviewUploadPage() {
         </main>
       </div>
     </>
-  </Suspense>);
+  );
+}
+
+// ─── Page ────────────────────────────────────────────────────
+export default function ReviewUploadPage() {
+  return (
+    <Suspense fallback={
+      <div style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        minHeight: '100vh', backgroundColor: 'var(--bg-primary)'
+      }}>
+        <div className="processing-spinner" />
+      </div>
+    }>
+      <ReviewUploadForm />
+    </Suspense>
+  );
 }
