@@ -1,14 +1,7 @@
 "use client";
 // app/(auth)/login/page.tsx
-// ============================================================
-// LOGIN PAGE
-// - Google OAuth
-// - Email + Password
-// - Redirects to /dashboard on success
-// - Redirects to ?redirect param if set (e.g. from middleware)
-// ============================================================
 
-import { useState } from "react";
+import { useState, Suspense } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/hooks/useAuth";
@@ -17,19 +10,20 @@ import { toast } from "sonner";
 // ─── Firebase error → human readable ─────────────────────────
 function parseFirebaseError(code: string): string {
   const map: Record<string, string> = {
-    "auth/invalid-credential":        "Incorrect email or password.",
-    "auth/user-not-found":            "No account found with this email.",
-    "auth/wrong-password":            "Incorrect password.",
-    "auth/too-many-requests":         "Too many attempts. Try again later.",
-    "auth/user-disabled":             "This account has been disabled.",
-    "auth/network-request-failed":    "Network error. Check your connection.",
-    "auth/popup-closed-by-user":      "Sign-in popup was closed.",
-    "auth/cancelled-popup-request":   "Another sign-in is in progress.",
+    "auth/invalid-credential":      "Incorrect email or password.",
+    "auth/user-not-found":          "No account found with this email.",
+    "auth/wrong-password":          "Incorrect password.",
+    "auth/too-many-requests":       "Too many attempts. Try again later.",
+    "auth/user-disabled":           "This account has been disabled.",
+    "auth/network-request-failed":  "Network error. Check your connection.",
+    "auth/popup-closed-by-user":    "Sign-in popup was closed.",
+    "auth/cancelled-popup-request": "Another sign-in is in progress.",
   };
   return map[code] ?? "Something went wrong. Please try again.";
 }
 
-export default function LoginPage() {
+// ─── INNER COMPONENT (uses useSearchParams — must be inside Suspense) ───
+function LoginForm() {
   const router       = useRouter();
   const searchParams = useSearchParams();
   const redirect     = searchParams.get("redirect") ?? "/dashboard";
@@ -41,16 +35,14 @@ export default function LoginPage() {
   const [loading,  setLoading]  = useState<"google" | "email" | null>(null);
   const [error,    setError]    = useState("");
 
-  // ── Create session cookie after Firebase auth ───────────────────
+  // ── Create session cookie after Firebase auth ──────────────
   async function createSession() {
-    // Get the current Firebase user's ID token
     const { auth } = await import("@/lib/firebase/client");
     const user = auth.currentUser;
     if (!user) throw new Error("No user logged in");
 
     const idToken = await user.getIdToken();
 
-    // Exchange ID token for HTTP-only session cookie
     const res = await fetch("/api/auth/session", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -84,8 +76,8 @@ export default function LoginPage() {
     e.preventDefault();
     setError("");
 
-    if (!email.trim())    return setError("Please enter your email.");
-    if (!password)        return setError("Please enter your password.");
+    if (!email.trim()) return setError("Please enter your email.");
+    if (!password)     return setError("Please enter your password.");
 
     setLoading("email");
     try {
@@ -113,7 +105,6 @@ export default function LoginPage() {
           padding: var(--space-6);
         }
 
-        /* Card */
         .auth-card {
           width: 100%;
           max-width: 420px;
@@ -125,7 +116,6 @@ export default function LoginPage() {
           animation: fade-up 0.4s var(--ease) both;
         }
 
-        /* Logo */
         .auth-logo {
           font-family: var(--font-display);
           font-size: 1.5rem; font-weight: 900;
@@ -136,7 +126,6 @@ export default function LoginPage() {
         }
         .auth-logo span { color: var(--gold); }
 
-        /* Heading */
         .auth-heading {
           font-family: var(--font-display);
           font-size: var(--text-3xl); font-weight: 700;
@@ -149,7 +138,6 @@ export default function LoginPage() {
           color: var(--text-secondary); margin-bottom: var(--space-8);
         }
 
-        /* Google button */
         .btn-google {
           width: 100%;
           display: flex; align-items: center; justify-content: center; gap: var(--space-3);
@@ -171,13 +159,10 @@ export default function LoginPage() {
         }
         .btn-google:disabled { opacity: 0.5; cursor: not-allowed; }
 
-        /* Google icon */
         .google-icon { width: 18px; height: 18px; flex-shrink: 0; }
 
-        /* Form fields */
         .field { margin-bottom: var(--space-4); }
 
-        /* Password wrapper */
         .pass-wrap { position: relative; }
         .pass-wrap .input { padding-right: 3rem; }
         .pass-toggle {
@@ -190,7 +175,6 @@ export default function LoginPage() {
         }
         .pass-toggle:hover { color: var(--text-primary); }
 
-        /* Forgot link */
         .forgot {
           display: block; text-align: right;
           font-size: var(--text-xs); color: var(--text-secondary);
@@ -199,7 +183,6 @@ export default function LoginPage() {
         }
         .forgot:hover { color: var(--gold); }
 
-        /* Error box */
         .auth-error {
           background: var(--error-dim);
           border: 1px solid rgba(248,113,113,0.2);
@@ -210,12 +193,8 @@ export default function LoginPage() {
           display: flex; align-items: flex-start; gap: var(--space-2);
         }
 
-        /* Submit btn */
-        .btn-submit {
-          width: 100%; margin-top: var(--space-2);
-        }
+        .btn-submit { width: 100%; margin-top: var(--space-2); }
 
-        /* Footer link */
         .auth-footer {
           text-align: center; margin-top: var(--space-6);
           font-size: var(--text-sm); color: var(--text-secondary);
@@ -223,7 +202,6 @@ export default function LoginPage() {
         .auth-footer a { color: var(--gold); font-weight: 500; }
         .auth-footer a:hover { color: var(--gold-light); }
 
-        /* Terms note */
         .auth-terms {
           text-align: center; margin-top: var(--space-5);
           font-size: var(--text-xs); color: var(--text-disabled);
@@ -238,21 +216,14 @@ export default function LoginPage() {
       <main className="auth-page">
         <div className="auth-card">
 
-          {/* Logo */}
           <Link href="/" className="auth-logo">
             Resu<span>MAI</span>
           </Link>
 
-          {/* Heading */}
           <h1 className="auth-heading">Welcome back</h1>
           <p className="auth-sub">Sign in to continue building your resume.</p>
 
-          {/* Google */}
-          <button
-            className="btn-google"
-            onClick={handleGoogle}
-            disabled={busy}
-          >
+          <button className="btn-google" onClick={handleGoogle} disabled={busy}>
             {loading === "google" ? (
               <span className="spinner" style={{ width: 18, height: 18 }} />
             ) : (
@@ -266,12 +237,10 @@ export default function LoginPage() {
             {loading === "google" ? "Signing in…" : "Continue with Google"}
           </button>
 
-          {/* Divider */}
           <div className="divider-text" style={{ marginBottom: "var(--space-5)" }}>
             or sign in with email
           </div>
 
-          {/* Error */}
           {error && (
             <div className="auth-error">
               <svg width="15" height="15" viewBox="0 0 15 15" fill="none" style={{ flexShrink: 0, marginTop: 1 }}>
@@ -281,7 +250,6 @@ export default function LoginPage() {
             </div>
           )}
 
-          {/* Email form */}
           <form onSubmit={handleEmail} noValidate>
             <div className="field">
               <label className="label" htmlFor="email">Email</label>
@@ -352,7 +320,6 @@ export default function LoginPage() {
             </button>
           </form>
 
-          {/* Footer */}
           <p className="auth-footer">
             Don&apos;t have an account?{" "}
             <Link href="/register">Create one free →</Link>
@@ -367,5 +334,39 @@ export default function LoginPage() {
         </div>
       </main>
     </>
+  );
+}
+
+// ─── LOADING FALLBACK ─────────────────────────────────────────
+function LoginFallback() {
+  return (
+    <div
+      style={{
+        minHeight: "100vh",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+      }}
+    >
+      <div
+        style={{
+          width: 32,
+          height: 32,
+          border: "3px solid var(--bg-elevated)",
+          borderTopColor: "var(--gold)",
+          borderRadius: "50%",
+          animation: "spin 0.8s linear infinite",
+        }}
+      />
+    </div>
+  );
+}
+
+// ─── EXPORT ───────────────────────────────────────────────────
+export default function LoginPage() {
+  return (
+    <Suspense fallback={<LoginFallback />}>
+      <LoginForm />
+    </Suspense>
   );
 }
