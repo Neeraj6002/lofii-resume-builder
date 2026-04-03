@@ -1,0 +1,120 @@
+// firestore.rules
+// ============================================================
+// FIRESTORE SECURITY RULES
+// These rules run on Google's servers — they are the LAST LINE
+// of defence even if someone bypasses your API entirely.
+//
+// Rule of thumb:
+//   - Users can only read/write their OWN documents
+//   - Server (Admin SDK) bypasses these rules entirely
+//   - Never trust client-sent userId — always use request.auth.uid
+// ============================================================
+
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── Helper functions ──────────────────────────────────────
+
+    // Is the request from a signed-in user?
+    function isAuth() {
+      return request.auth != null;
+    }
+
+    // Is the signed-in user the owner of this document?
+    function isOwner(uid) {
+      return isAuth() && request.auth.uid == uid;
+    }
+
+    // Is the incoming data a valid string field?
+    function isString(val) {
+      return val is string && val.size() <= 500;
+    }
+
+    // ── Users collection ──────────────────────────────────────
+    // /users/{userId}
+    //
+    // READ:  only the user themselves
+    // WRITE: only the user themselves, but they cannot
+    //        set isPremium or subscription — that is only
+    //        done by the server (Admin SDK bypasses rules)
+
+    match /users/{userId} {
+
+      allow read: if isOwner(userId);
+
+      // Users can update their own profile fields
+      // but CANNOT touch isPremium or subscription
+      // (those are only written by the webhook via Admin SDK)
+      allow update: if isOwner(userId)
+        && !request.resource.data.diff(resource.data).affectedKeys()
+            .hasAny(['isPremium', 'subscription']);
+
+      // New user doc is created by the server on first login
+      // (ensureUserProfile in lib/firebase/auth.ts via Admin SDK)
+      // so we do NOT allow client-side create here
+      allow create: if false;
+      allow delete: if false;
+    }
+
+    // ── Resumes collection ────────────────────────────────────
+    // /resumes/{resumeId}
+    //
+    // READ:   only if resume.userId == request.auth.uid
+    // CREATE: only via server (API route sets userId from token)
+    // UPDATE: only the owner, and they cannot change userId
+    // DELETE: only the owner
+
+    match /resumes/{resumeId} {
+
+      // Only the owner can read their own resume
+      allow read: if isAuth()
+        && resource.data.userId == request.auth.uid;
+
+      // Clients cannot create resumes directly —
+      // all creates go through /api/resume (Admin SDK)
+      allow create: if false;
+
+      // Owner can update, but cannot change the userId field
+      // (prevents a user from reassigning a resume to another user)
+      allow update: if isAuth()
+        && resource.data.userId == request.auth.uid
+        && request.resource.data.userId == resource.data.userId
+        && validateResumeUpdate(request.resource.data);
+
+      // Owner can delete their own resume
+      allow delete: if isAuth()
+        && resource.data.userId == request.auth.uid;
+    }
+
+    // ── Resume update validator ───────────────────────────────
+    // Validates that the incoming resume update has correct
+    // field types and sizes — prevents malformed data writes
+
+    function validateResumeUpdate(data) {
+      return data.title is string
+        && data.title.size() <= 100
+        && data.template in ['classic', 'modern', 'minimal', 'executive', 'creative', 'tech']
+        && data.summary is string
+        && data.summary.size() <= 1000
+        && data.experience is list
+        && data.experience.size() <= 20
+        && data.education is list
+        && data.education.size() <= 10
+        && data.skills is list
+        && data.skills.size() <= 50
+        && data.projects is list
+        && data.projects.size() <= 20
+        && data.certifications is list
+        && data.certifications.size() <= 20;
+    }
+
+    // ── Deny everything else ──────────────────────────────────
+    // Any collection or document not explicitly matched above
+    // is denied by default. This is explicit for clarity.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

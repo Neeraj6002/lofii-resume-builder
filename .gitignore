@@ -1,0 +1,71 @@
+# =========================
+# Dependencies
+# =========================
+/node_modules
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# =========================
+# AI / Tooling
+# =========================
+.claude/
+
+# =========================
+# Next.js build output
+# =========================
+/.next/
+/out/
+/build
+
+# =========================
+# Production / Logs
+# =========================
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# =========================
+# Environment variables
+# =========================
+.env*
+!.env.example
+
+# =========================
+# Firebase / Vercel
+# =========================
+.vercel
+.firebase/
+
+# =========================
+# Testing
+# =========================
+/coverage
+
+# =========================
+# System files
+# =========================
+.DS_Store
+Thumbs.db
+
+# =========================
+# TypeScript
+# =========================
+*.tsbuildinfo
+
+# =========================
+# IDE / Editor
+# =========================
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+
+# =========================
+# Misc
+# =========================
+*.pem
