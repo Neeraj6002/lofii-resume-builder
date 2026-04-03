@@ -8,17 +8,43 @@
 // - Redirects to /review/[id] with results in sessionStorage
 // ============================================================
 
-import { useState, useRef, useCallback, useEffect, Fragment, Suspense } from "react";
+import {
+  useState,
+  useRef,
+  useCallback,
+  useEffect,
+  Fragment,
+  Suspense,
+  ReactElement,
+  ChangeEvent,
+  DragEvent,
+  MouseEvent,
+} from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/hooks/useAuth";
 import { toast } from "sonner";
 
+// ─── Types ────────────────────────────────────────────────────
+type StepType = 0 | 1 | 2 | 3; // 0=waiting, 1=extracting, 2=reviewing, 3=done
+
+interface StepLabelItem {
+  n: number;
+  label: string;
+}
+
+interface StepDotProps {
+  n: number;
+  label: string;
+  active: boolean;
+  done: boolean;
+}
+
 // ─── PDF text extraction via pdfjs-dist ──────────────────────
 async function extractPDF(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onload = async (e) => {
+    reader.onload = async (e: ProgressEvent<FileReader>) => {
       try {
         const typedArray = new Uint8Array(e.target?.result as ArrayBuffer);
 
@@ -26,7 +52,6 @@ async function extractPDF(file: File): Promise<string> {
         const pdfjsLib = await import("pdfjs-dist");
 
         // Use local worker file from node_modules to avoid CDN/CORS issues
-        // This creates a URL that points to the worker file in the installed package
         pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
           "pdfjs-dist/build/pdf.worker.min.mjs",
           import.meta.url
@@ -36,11 +61,14 @@ async function extractPDF(file: File): Promise<string> {
         let text = "";
 
         for (let i = 1; i <= pdf.numPages; i++) {
-          const page    = await pdf.getPage(i);
+          const page = await pdf.getPage(i);
           const content = await page.getTextContent();
-          const strings = content.items.map((item: Record<string, unknown>) =>
-            typeof item["str"] === "string" ? item["str"] : ""
-          );
+          const strings = content.items.map((item) => {
+            if ("str" in item && typeof item.str === "string") {
+              return item.str;
+            }
+            return "";
+          });
           text += strings.join(" ") + "\n";
         }
 
@@ -56,15 +84,18 @@ async function extractPDF(file: File): Promise<string> {
 
 // ─── DOCX text extraction via mammoth ────────────────────────
 async function extractDOCX(file: File): Promise<string> {
-  const mammoth     = await import("mammoth");
+  const mammoth = await import("mammoth");
   const arrayBuffer = await file.arrayBuffer();
-  const result      = await mammoth.extractRawText({ arrayBuffer });
+  const result = await mammoth.extractRawText({ arrayBuffer });
   return result.value.trim();
 }
 
 // ─── File validation ──────────────────────────────────────────
 function validateFile(file: File): string | null {
-  const allowed = ["application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"];
+  const allowed = [
+    "application/pdf",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ];
   if (!allowed.includes(file.type)) {
     return "Only PDF and DOCX files are supported.";
   }
@@ -75,17 +106,23 @@ function validateFile(file: File): string | null {
 }
 
 // ─── Step indicator ───────────────────────────────────────────
-function StepDot({ n, label, active, done }: {
-  n: number; label: string; active: boolean; done: boolean;
-}) {
+function StepDot({ n, label, active, done }: StepDotProps): ReactElement {
   return (
     <div className="step-dot-wrap">
       <div className={`step-dot${active ? " active" : ""}${done ? " done" : ""}`}>
         {done ? (
           <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-            <path d="M2 6l3 3 5-5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+            <path
+              d="M2 6l3 3 5-5"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
           </svg>
-        ) : n}
+        ) : (
+          n
+        )}
       </div>
       <span className={`step-label${active ? " active" : ""}`}>{label}</span>
     </div>
@@ -93,52 +130,73 @@ function StepDot({ n, label, active, done }: {
 }
 
 // ─── Inner component that uses useSearchParams ─────────────────
-function ReviewUploadForm() {
-  const router       = useRouter();
+function ReviewUploadForm(): ReactElement {
+  const router = useRouter();
   const searchParams = useSearchParams();
-  const { user, getIdToken }     = useAuth();
+  const { user, getIdToken } = useAuth();
 
   const resumeId = searchParams.get("resumeId"); // optional — from dashboard
 
-  const [dragOver,   setDragOver]   = useState(false);
-  const [file,       setFile]       = useState<File | null>(null);
-  const [step,       setStep]       = useState<0 | 1 | 2 | 3>(0);
+  const [dragOver, setDragOver] = useState<boolean>(false);
+  const [file, setFile] = useState<File | null>(null);
+  const [step, setStep] = useState<StepType>(0);
   // 0 = waiting, 1 = extracting, 2 = reviewing, 3 = done
-  const [error,      setError]      = useState("");
-  const [progress,   setProgress]   = useState(0);
+  const [error, setError] = useState<string>("");
+  const [progress, setProgress] = useState<number>(0);
 
   const inputRef = useRef<HTMLInputElement>(null);
 
   // ── Handle file selection ──────────────────────────────────
-  const handleFile = useCallback((selected: File) => {
+  const handleFile = useCallback((selected: File): void => {
     const err = validateFile(selected);
-    if (err) { setError(err); return; }
+    if (err) {
+      setError(err);
+      return;
+    }
     setError("");
     setFile(selected);
   }, []);
 
-  const onDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    setDragOver(false);
-    const f = e.dataTransfer.files[0];
-    if (f) handleFile(f);
-  }, [handleFile]);
+  const onDrop = useCallback(
+    (e: DragEvent<HTMLDivElement>): void => {
+      e.preventDefault();
+      setDragOver(false);
+      const f = e.dataTransfer.files[0];
+      if (f) handleFile(f);
+    },
+    [handleFile]
+  );
 
-  const onInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0];
-    if (f) handleFile(f);
-  }, [handleFile]);
+  const onInputChange = useCallback(
+    (e: ChangeEvent<HTMLInputElement>): void => {
+      const f = e.target.files?.[0];
+      if (f) handleFile(f);
+    },
+    [handleFile]
+  );
 
   // ── Animate progress bar ──────────────────────────────────
   useEffect(() => {
-    if (step === 0) { setProgress(0); return; }
-    if (step === 1) { setProgress(30); return; }
-    if (step === 2) { setProgress(65); return; }
-    if (step === 3) { setProgress(100); return; }
+    if (step === 0) {
+      setProgress(0);
+      return;
+    }
+    if (step === 1) {
+      setProgress(30);
+      return;
+    }
+    if (step === 2) {
+      setProgress(65);
+      return;
+    }
+    if (step === 3) {
+      setProgress(100);
+      return;
+    }
   }, [step]);
 
   // ── Run review ─────────────────────────────────────────────
-  async function handleReview() {
+  const handleReview = useCallback(async (): Promise<void> => {
     if (!file || !user) return;
     setError("");
 
@@ -154,7 +212,9 @@ function ReviewUploadForm() {
       }
 
       if (!resumeText || resumeText.length < 50) {
-        throw new Error("Could not extract enough text from the file. Make sure it is not a scanned image PDF.");
+        throw new Error(
+          "Could not extract enough text from the file. Make sure it is not a scanned image PDF."
+        );
       }
 
       if (resumeText.length > 15000) {
@@ -188,8 +248,16 @@ function ReviewUploadForm() {
       const data = await res.json();
 
       if (!res.ok) {
-        if (res.status === 429) throw new Error("Too many review requests. Please wait a few minutes.");
-        if (res.status === 503) throw new Error("AI service is temporarily unavailable. Try again in a moment.");
+        if (res.status === 429) {
+          throw new Error(
+            "Too many review requests. Please wait a few minutes."
+          );
+        }
+        if (res.status === 503) {
+          throw new Error(
+            "AI service is temporarily unavailable. Try again in a moment."
+          );
+        }
         throw new Error(data.error ?? "Review failed.");
       }
 
@@ -199,15 +267,18 @@ function ReviewUploadForm() {
       // Store in sessionStorage — review results page reads this
       // We use sessionStorage (not URL params) to avoid exposing the data in the URL
       const reviewId = crypto.randomUUID();
-      sessionStorage.setItem(`review:${reviewId}`, JSON.stringify({
-        ...data,
-        fileName: file.name,
-        reviewedAt: new Date().toISOString(),
-        resumeId: resumeId ?? null,
-      }));
+      sessionStorage.setItem(
+        `review:${reviewId}`,
+        JSON.stringify({
+          ...data,
+          fileName: file.name,
+          reviewedAt: new Date().toISOString(),
+          resumeId: resumeId ?? null,
+        })
+      );
 
       // Small delay so user sees the 100% state
-      await new Promise(r => setTimeout(r, 600));
+      await new Promise((r) => setTimeout(r, 600));
 
       router.push(`/review/${reviewId}`);
     } catch (err: unknown) {
@@ -217,15 +288,15 @@ function ReviewUploadForm() {
       setError(msg);
       toast.error(msg);
     }
-  }
+  }, [file, user, getIdToken, resumeId, router]);
 
   const isProcessing = step > 0 && step < 3;
 
-  const stepLabels = [
-    { n: 1, label: "Upload"   },
-    { n: 2, label: "Extract"  },
-    { n: 3, label: "Analyse"  },
-    { n: 4, label: "Results"  },
+  const stepLabels: StepLabelItem[] = [
+    { n: 1, label: "Upload" },
+    { n: 2, label: "Extract" },
+    { n: 3, label: "Analyse" },
+    { n: 4, label: "Results" },
   ];
 
   return (
@@ -405,13 +476,20 @@ function ReviewUploadForm() {
       <div className="bg-grain" />
 
       <div className="review-page">
-
         {/* ── Topbar ─────────────────────────────────────── */}
         <header className="topbar">
-          <Link href="/" className="topbar-logo">Resu<span>MAI</span></Link>
+          <Link href="/" className="topbar-logo">
+            Resu<span>MAI</span>
+          </Link>
           <Link href="/dashboard" className="back-link">
             <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-              <path d="M9 11L5 7l4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+              <path
+                d="M9 11L5 7l4-4"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
             </svg>
             Dashboard
           </Link>
@@ -420,7 +498,6 @@ function ReviewUploadForm() {
         {/* ── Main ───────────────────────────────────────── */}
         <main className="review-content">
           <div className="review-card">
-
             <h1 className="review-heading">Review your resume.</h1>
             <p className="review-sub">
               Upload your resume and get an ATS score with detailed feedback
@@ -459,15 +536,21 @@ function ReviewUploadForm() {
                 </div>
                 <p className="processing-sub">
                   {step === 1 && "Reading your PDF or DOCX file"}
-                  {step === 2 && "Checking ATS compatibility, keywords, impact, and more"}
+                  {step === 2 &&
+                    "Checking ATS compatibility, keywords, impact, and more"}
                 </p>
               </div>
             ) : (
               <>
                 {/* Drop zone */}
                 <div
-                  className={`drop-zone${dragOver ? " over" : ""}${file ? " has-file" : ""}`}
-                  onDragOver={e => { e.preventDefault(); setDragOver(true); }}
+                  className={`drop-zone${dragOver ? " over" : ""}${
+                    file ? " has-file" : ""
+                  }`}
+                  onDragOver={(e: DragEvent<HTMLDivElement>) => {
+                    e.preventDefault();
+                    setDragOver(true);
+                  }}
                   onDragLeave={() => setDragOver(false)}
                   onDrop={onDrop}
                   onClick={() => !file && inputRef.current?.click()}
@@ -483,9 +566,25 @@ function ReviewUploadForm() {
                   {!file ? (
                     <>
                       <div className="drop-icon">
-                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-                          <path d="M12 2v13M8 7l4-5 4 5" stroke="var(--gold)" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
-                          <path d="M20 17v3a1 1 0 01-1 1H5a1 1 0 01-1-1v-3" stroke="var(--gold)" strokeWidth="1.8" strokeLinecap="round"/>
+                        <svg
+                          width="24"
+                          height="24"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                        >
+                          <path
+                            d="M12 2v13M8 7l4-5 4 5"
+                            stroke="var(--gold)"
+                            strokeWidth="1.8"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          />
+                          <path
+                            d="M20 17v3a1 1 0 01-1 1H5a1 1 0 01-1-1v-3"
+                            stroke="var(--gold)"
+                            strokeWidth="1.8"
+                            strokeLinecap="round"
+                          />
                         </svg>
                       </div>
                       <div className="drop-title">Drop your resume here</div>
@@ -493,11 +592,21 @@ function ReviewUploadForm() {
                       <div className="drop-types">
                         <span className="badge badge-muted">PDF</span>
                         <span className="badge badge-muted">DOCX</span>
-                        <span style={{ fontSize: "var(--text-xs)", color: "var(--text-disabled)" }}>• Max 5MB</span>
+                        <span
+                          style={{
+                            fontSize: "var(--text-xs)",
+                            color: "var(--text-disabled)",
+                          }}
+                        >
+                          • Max 5MB
+                        </span>
                       </div>
                     </>
                   ) : (
-                    <div className="drop-title" style={{ color: "var(--gold-light)" }}>
+                    <div
+                      className="drop-title"
+                      style={{ color: "var(--gold-light)" }}
+                    >
                       ✓ File ready to review
                     </div>
                   )}
@@ -507,22 +616,53 @@ function ReviewUploadForm() {
                 {file && (
                   <div className="file-selected">
                     <div className="file-icon">
-                      <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-                        <path d="M10 2H5a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2V7l-5-5z" stroke="var(--gold)" strokeWidth="1.4"/>
-                        <path d="M10 2v5h5" stroke="var(--gold)" strokeWidth="1.4" strokeLinecap="round"/>
+                      <svg
+                        width="18"
+                        height="18"
+                        viewBox="0 0 18 18"
+                        fill="none"
+                      >
+                        <path
+                          d="M10 2H5a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2V7l-5-5z"
+                          stroke="var(--gold)"
+                          strokeWidth="1.4"
+                        />
+                        <path
+                          d="M10 2v5h5"
+                          stroke="var(--gold)"
+                          strokeWidth="1.4"
+                          strokeLinecap="round"
+                        />
                       </svg>
                     </div>
                     <div>
                       <div className="file-name">{file.name}</div>
-                      <div className="file-size">{(file.size / 1024).toFixed(0)} KB · {file.type.includes("pdf") ? "PDF" : "DOCX"}</div>
+                      <div className="file-size">
+                        {(file.size / 1024).toFixed(0)} KB ·{" "}
+                        {file.type.includes("pdf") ? "PDF" : "DOCX"}
+                      </div>
                     </div>
                     <button
                       className="file-remove"
-                      onClick={e => { e.stopPropagation(); setFile(null); setError(""); }}
+                      onClick={(e: MouseEvent<HTMLButtonElement>) => {
+                        e.stopPropagation();
+                        setFile(null);
+                        setError("");
+                      }}
                       title="Remove file"
                     >
-                      <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                        <path d="M2 2l10 10M12 2L2 12" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+                      <svg
+                        width="14"
+                        height="14"
+                        viewBox="0 0 14 14"
+                        fill="none"
+                      >
+                        <path
+                          d="M2 2l10 10M12 2L2 12"
+                          stroke="currentColor"
+                          strokeWidth="1.4"
+                          strokeLinecap="round"
+                        />
                       </svg>
                     </button>
                   </div>
@@ -531,8 +671,17 @@ function ReviewUploadForm() {
                 {/* Error */}
                 {error && (
                   <div className="review-error">
-                    <svg width="15" height="15" viewBox="0 0 15 15" fill="none" style={{ flexShrink: 0, marginTop: 1 }}>
-                      <path d="M7.5 1a6.5 6.5 0 100 13A6.5 6.5 0 007.5 1zM7 4.5a.5.5 0 011 0v4a.5.5 0 01-1 0v-4zm.5 6.5a.75.75 0 110-1.5.75.75 0 010 1.5z" fill="currentColor"/>
+                    <svg
+                      width="15"
+                      height="15"
+                      viewBox="0 0 15 15"
+                      fill="none"
+                      style={{ flexShrink: 0, marginTop: 1 }}
+                    >
+                      <path
+                        d="M7.5 1a6.5 6.5 0 100 13A6.5 6.5 0 007.5 1zM7 4.5a.5.5 0 011 0v4a.5.5 0 01-1 0v-4zm.5 6.5a.75.75 0 110-1.5.75.75 0 010 1.5z"
+                        fill="currentColor"
+                      />
                     </svg>
                     {error}
                   </div>
@@ -553,30 +702,52 @@ function ReviewUploadForm() {
             {/* What we check */}
             <div className="checks-grid">
               {[
-                "ATS Compatibility", "Keyword Density",
-                "Quantified Impact", "Summary Quality",
-                "Action Verbs", "Skills Match",
-                "Length & Depth", "Formatting",
-              ].map(c => (
-                <div key={c} className="check-item">{c}</div>
+                "ATS Compatibility",
+                "Keyword Density",
+                "Quantified Impact",
+                "Summary Quality",
+                "Action Verbs",
+                "Skills Match",
+                "Length & Depth",
+                "Formatting",
+              ].map((c) => (
+                <div key={c} className="check-item">
+                  {c}
+                </div>
               ))}
             </div>
 
             {/* Free tier note */}
             {!user?.isPremium && (
               <div className="free-note">
-                <svg className="free-note-icon" width="16" height="16" viewBox="0 0 16 16" fill="none">
-                  <circle cx="8" cy="8" r="6.5" stroke="currentColor" strokeWidth="1.2"/>
-                  <path d="M8 7.5v4M8 5h.01" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
+                <svg
+                  className="free-note-icon"
+                  width="16"
+                  height="16"
+                  viewBox="0 0 16 16"
+                  fill="none"
+                >
+                  <circle cx="8" cy="8" r="6.5" stroke="currentColor" strokeWidth="1.2" />
+                  <path
+                    d="M8 7.5v4M8 5h.01"
+                    stroke="currentColor"
+                    strokeWidth="1.2"
+                    strokeLinecap="round"
+                  />
                 </svg>
                 <p className="free-note-text">
-                  <strong>Free plan:</strong> you&apos;ll see your overall ATS score and 2 section previews.{" "}
-                  <Link href="/dashboard" style={{ color: "var(--gold)", fontWeight: 500 }}>Upgrade to Premium</Link>
+                  <strong>Free plan:</strong> you&apos;ll see your overall ATS
+                  score and 2 section previews.{" "}
+                  <Link
+                    href="/dashboard"
+                    style={{ color: "var(--gold)", fontWeight: 500 }}
+                  >
+                    Upgrade to Premium
+                  </Link>
                   {" "}to unlock all 8 categories and every actionable fix.
                 </p>
               </div>
             )}
-
           </div>
         </main>
       </div>
@@ -584,17 +755,27 @@ function ReviewUploadForm() {
   );
 }
 
-// ─── Page ────────────────────────────────────────────────────
-export default function ReviewUploadPage() {
+// ─── Loading Fallback ─────────────────────────────────────────
+function LoadingFallback(): ReactElement {
   return (
-    <Suspense fallback={
-      <div style={{
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        minHeight: '100vh', backgroundColor: 'var(--bg-primary)'
-      }}>
-        <div className="processing-spinner" />
-      </div>
-    }>
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        minHeight: "100vh",
+        backgroundColor: "var(--bg-primary)",
+      }}
+    >
+      <div className="processing-spinner" />
+    </div>
+  );
+}
+
+// ─── Page Component (wraps with Suspense) ──────────────────────
+export default function ReviewUploadPage(): ReactElement {
+  return (
+    <Suspense fallback={<LoadingFallback />}>
       <ReviewUploadForm />
     </Suspense>
   );
