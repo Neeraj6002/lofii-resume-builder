@@ -1,27 +1,33 @@
 // app/api/ai/generate-content/route.ts
 // ============================================================
 // CONTENT GENERATION API
-// Handles AI-powered resume section generation.
-// Free users: one free preview per section type
-// Premium users: unlimited generation
+//
+// Free users:  one free preview per section type (generateFreePreview)
+// Paid users:  full generation, 1 builder credit consumed
+//
+// Credit gate logic:
+//   isPreview=true  + not premium → free preview (once per type)
+//   isPreview=false + no credit   → 402 PREMIUM_REQUIRED
+//   isPreview=false + has credit  → full generation + deduct credit
 // ============================================================
 
-import { NextResponse } from "next/server";
-import { verifyAuthToken, getUserProfile } from "@/lib/firebase/auth";
+import { NextResponse }                          from "next/server";
+import { verifyAuthToken, getUserProfile }        from "@/lib/firebase/auth";
 import { generateResumeContent, generateFreePreview } from "@/lib/ai/openrouter";
-import { AIGenerateSchema } from "@/lib/schemas";
-import { checkRateLimit, aiRateLimit } from "@/lib/ratelimit";
-import { getAdminDb } from "@/lib/firebase/admin";
+import { AIGenerateSchema }                      from "@/lib/schemas";
+import { checkRateLimit, aiRateLimit }           from "@/lib/ratelimit";
+import { getAdminDb }                            from "@/lib/firebase/admin";
+import { FieldValue }                            from "firebase-admin/firestore";
 
 export async function POST(request: Request) {
   try {
-    // ── 1. Verify auth ──────────────────────────────────────
+    // ── 1. Auth ─────────────────────────────────────────────
     const authHeader = request.headers.get("Authorization");
-    const decoded = await verifyAuthToken(authHeader);
-    const uid = decoded.uid;
+    const decoded    = await verifyAuthToken(authHeader);
+    const uid        = decoded.uid;
 
-    // ── 2. Validate input ───────────────────────────────────
-    const body = await request.json();
+    // ── 2. Validate input ────────────────────────────────────
+    const body   = await request.json();
     const parsed = AIGenerateSchema.safeParse(body);
 
     if (!parsed.success) {
@@ -33,17 +39,14 @@ export async function POST(request: Request) {
 
     const { type, context: rawContext } = parsed.data;
 
-    // Ensure all context values are strings (Zod should handle this, but be safe)
+    // Normalise context values to strings
     const context: Record<string, string> = Object.fromEntries(
-      Object.entries(rawContext).map(([k, v]) => [
-        k,
-        typeof v === "string" ? v : String(v ?? ""),
-      ])
+      Object.entries(rawContext).map(([k, v]) => [k, typeof v === "string" ? v : String(v ?? "")])
     );
 
-    // Manual validation for field count (refine was causing Zod internal error)
-    const specialKeys = ["__preview"];
-    const regularKeys = Object.keys(context).filter(k => !specialKeys.includes(k));
+    // Reject absurdly large context objects
+    const specialKeys  = ["__preview"];
+    const regularKeys  = Object.keys(context).filter(k => !specialKeys.includes(k));
     if (regularKeys.length > 20) {
       return NextResponse.json(
         { error: "Too many context fields (max 20)" },
@@ -53,137 +56,132 @@ export async function POST(request: Request) {
 
     const isPreview = context.__preview === "true";
 
-    // ── 3. Check premium status ─────────────────────────────
-    const profile = await getUserProfile(uid);
-    const isPremium = profile?.isPremium ?? false;
+    // ── 3. Load user profile ─────────────────────────────────
+    const profile        = await getUserProfile(uid);
+    const isPremium      = profile?.isPremium       ?? false;
+    const builderCredits = profile?.credits?.builder ?? 0;
 
-    // ── 4. Handle free preview logic ────────────────────────
+    console.info(`[Generate] User ${uid} | type: ${type} | isPremium: ${isPremium} | credits.builder: ${builderCredits} | isPreview: ${isPreview}`);
+
+    // ── 4. Free preview path ─────────────────────────────────
+    // Non-premium users get one free preview per section type.
+    // Preview flag must be explicitly set by the client.
     if (isPreview && !isPremium) {
-      // Free users get ONE free preview per type
-      // Check if they've already used their free preview for this type
-      const adminDb = getAdminDb();
-      const userDoc = await adminDb.collection("users").doc(uid).get();
+      const adminDb         = getAdminDb();
+      const userDoc         = await adminDb.collection("users").doc(uid).get();
       const freePreviewsUsed = userDoc.data()?.freePreviewsUsed ?? {};
 
       if (freePreviewsUsed[type]) {
-        // Already used free preview for this type
         return NextResponse.json(
           {
-            code: "PREMIUM_REQUIRED",
-            error: "You've used your free preview for this section. Upgrade to Premium for unlimited generations.",
+            code:  "PREMIUM_REQUIRED",
+            error: "You've used your free preview for this section. Upgrade to Premium for full generations.",
           },
-          { status: 402 } // 402 Payment Required
+          { status: 402 }
         );
       }
 
-      // Generate free preview (single bullet point for experience, etc.)
-      // Safely extract role and company with fallbacks
-      const role: string = context.role || context.name || "this position";
-      const company: string = context.company || context.institution || "organization";
+      const role    = context.role    || context.name        || "this position";
+      const company = context.company || context.institution || "organization";
 
-      console.log(
-        `[Generate] Free preview for user ${uid}, type: ${type}`
-      );
       const content = await generateFreePreview(role, company);
 
-      // Mark this preview as used
       await adminDb.collection("users").doc(uid).update({
-        freePreviewsUsed: {
-          ...freePreviewsUsed,
-          [type]: true,
-        },
+        freePreviewsUsed: { ...freePreviewsUsed, [type]: true },
       });
 
-      return NextResponse.json({
-        content,
-        preview: true,
-        tokensUsed: 0, // Free previews don't count toward quota
-      });
+      console.info(`[Generate] ✓ Free preview served for user ${uid}, type: ${type}`);
+      return NextResponse.json({ content, preview: true, tokensUsed: 0 });
     }
 
-    // ── 5. Premium feature — require subscription ───────────
-    if (!isPremium && !isPreview) {
+    // ── 5. Credit gate ───────────────────────────────────────
+    const hasBuilderCredit = isPremium && builderCredits >= 1;
+
+    if (!hasBuilderCredit) {
+      console.info(`[Generate] Blocked — no builder credit | uid: ${uid} | isPremium: ${isPremium} | credits: ${builderCredits}`);
       return NextResponse.json(
         {
-          code: "PREMIUM_REQUIRED",
-          error: "Content generation requires Premium. Upgrade to unlock unlimited generations.",
+          code:  "PREMIUM_REQUIRED",
+          error: "Content generation requires a builder credit. Purchase a plan to unlock.",
         },
-        { status: 402 } // 402 Payment Required
+        { status: 402 }
       );
     }
 
-    // ── 6. Rate limit (premium users only) ──────────────────
-    // Free preview doesn't count toward rate limit
-    if (isPremium) {
-      await checkRateLimit(aiRateLimit, `generate:${uid}`);
-    }
+    // ── 6. Rate limit (paid users only) ─────────────────────
+    await checkRateLimit(aiRateLimit, `generate:${uid}`);
 
-    // ── 7. Run AI generation ────────────────────────────────
-    console.log(`[Generate] Starting generation for user ${uid}, type: ${type}`);
-    console.log(`[Generate] Context:`, context);
+    // ── 7. Run AI generation ─────────────────────────────────
     const { content, tokens } = await generateResumeContent(type, context);
-    console.log(
-      `[Generate] Completed generation for user ${uid}, tokens used: ${tokens}`
-    );
+    console.info(`[Generate] ✓ Generated for user ${uid} | type: ${type} | tokens: ${tokens}`);
 
-    // ── 8. Track token usage (premium feature) ──────────────
-    if (isPremium) {
-      const adminDb = getAdminDb();
-      const userDoc = await adminDb.collection("users").doc(uid).get();
-      const currentTokens = userDoc.data()?.totalTokensUsed ?? 0;
+    // ── 8. Consume builder credit (transactional) ────────────
+    const adminDb = getAdminDb();
+    const userRef = adminDb.collection("users").doc(uid);
 
-      await adminDb.collection("users").doc(uid).update({
-        totalTokensUsed: currentTokens + tokens,
-        lastGenerationAt: new Date(),
+    await adminDb.runTransaction(async (tx) => {
+      const snap           = await tx.get(userRef);
+      const currentBuilder = snap.data()?.credits?.builder ?? 0;
+      const currentReview  = snap.data()?.credits?.review  ?? 0;
+      const currentTokens  = snap.data()?.totalTokensUsed  ?? 0;
+
+      if (currentBuilder < 1) {
+        throw new Error("NO_BUILDER_CREDITS");
+      }
+
+      const newBuilder   = currentBuilder - 1;
+      const stillPremium = newBuilder > 0 || currentReview > 0;
+
+      tx.update(userRef, {
+        "credits.builder": FieldValue.increment(-1),
+        isPremium:         stillPremium,
+        totalTokensUsed:   currentTokens + tokens,
+        lastGenerationAt:  new Date(),
       });
-    }
-
-    return NextResponse.json({
-      content,
-      preview: false,
-      tokensUsed: tokens,
     });
+
+    console.info(`[Generate] ✓ Consumed builder credit for user ${uid}`);
+
+    return NextResponse.json({ content, preview: false, tokensUsed: tokens });
+
   } catch (err) {
-    console.error("[POST /api/ai/generate-content] ERROR:", err);
+    console.error("[POST /api/ai/generate-content]", err);
     const error = err as Error;
 
-    // ── Error handling ──────────────────────────────────────
-    if (error.message === "UNAUTHORIZED") {
+    if (error.message === "UNAUTHORIZED")
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
 
-    if (error.message === "RATE_LIMITED") {
+    if (error.message === "RATE_LIMITED")
       return NextResponse.json(
         { error: "Too many generation requests. Please wait before trying again." },
         { status: 429 }
       );
-    }
 
-    if (error.message.startsWith("AI_SERVICE_ERROR")) {
-      const isDev = process.env.NODE_ENV === "development";
+    if (error.message === "NO_BUILDER_CREDITS")
       return NextResponse.json(
-        {
-          error: "AI service temporarily unavailable. Try again in a moment.",
-          details: error.message,
-          ...(isDev && { stack: error.stack }),
-        },
+        { code: "PREMIUM_REQUIRED", error: "No builder credits remaining. Purchase a plan to continue." },
+        { status: 402 }
+      );
+
+    if (error.message?.startsWith("AI_SERVICE_ERROR"))
+      return NextResponse.json(
+        { error: "AI service temporarily unavailable. Try again in a moment.", details: error.message },
         { status: 503 }
       );
-    }
 
-    if (error.message === "AI_PARSE_ERROR") {
+    if (error.message === "AI_PARSE_ERROR")
       return NextResponse.json(
         { error: "Could not generate content. Please try again." },
         { status: 422 }
       );
-    }
 
-    // Return detailed error in development
-    const errorResponse = {
-      error: "Internal error",
-      message: error.message,
-      stack: process.env.NODE_ENV === "development" ? error.stack : undefined,
-    };
-    return NextResponse.json(errorResponse, { status: 500 });
+    return NextResponse.json(
+      {
+        error:   "Internal error",
+        message: error.message,
+        stack:   process.env.NODE_ENV === "development" ? error.stack : undefined,
+      },
+      { status: 500 }
+    );
   }
 }

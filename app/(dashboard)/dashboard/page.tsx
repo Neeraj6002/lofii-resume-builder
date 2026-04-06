@@ -8,10 +8,10 @@ import { useAuth } from "@/hooks/useAuth";
 import { toast } from "sonner";
 
 interface ResumeCard {
-  id: string;
-  title: string;
-  template: string;
-  updatedAt: { _seconds: number };
+  id:              string;
+  title:           string;
+  template:        string;
+  updatedAt:       { _seconds: number };
   lastReviewScore: number | null;
 }
 
@@ -48,12 +48,7 @@ function ResumeCardItem({ resume, onDelete }: { resume: ResumeCard; onDelete: (i
     setDeleting(true);
     try {
       const token = await getIdToken();
-      if (!token) {
-        toast.error("Session expired. Please sign in again.");
-        setDeleting(false);
-        setConfirm(false);
-        return;
-      }
+      if (!token) { toast.error("Session expired."); setDeleting(false); setConfirm(false); return; }
       const res = await fetch(`/api/resume/${resume.id}`, {
         method: "DELETE",
         headers: { Authorization: `Bearer ${token}` },
@@ -134,34 +129,35 @@ function EmptyState() {
   );
 }
 
-// ─── INNER COMPONENT (uses useSearchParams — must be inside Suspense) ───
+// ─── INNER COMPONENT ─────────────────────────────────────────
 function DashboardContent() {
   const router       = useRouter();
   const searchParams = useSearchParams();
-  const { user, loading: authLoading, signOut, getIdToken } = useAuth();
+  const { user, loading: authLoading, signOut, getIdToken, refreshUser } = useAuth();
 
   const [resumes,   setResumes]   = useState<ResumeCard[]>([]);
   const [loading,   setLoading]   = useState(true);
   const [menuOpen,  setMenuOpen]  = useState(false);
   const [upgrading, setUpgrading] = useState(false);
 
+  // ── After payment redirect ────────────────────────────────
+  // Re-fetch isPremium from Firestore immediately so the UI reflects
+  // the upgraded state without requiring a full sign-out/sign-in.
   useEffect(() => {
     if (searchParams.get("payment") === "success") {
       toast.success("Payment successful! You now have lifetime premium access 🎉");
       window.history.replaceState({}, "", "/dashboard");
+      // Refresh user so isPremium flips to true immediately
+      refreshUser();
     }
-  }, [searchParams]);
+  }, [searchParams, refreshUser]);
 
   const fetchResumes = useCallback(async () => {
     if (!user) return;
     setLoading(true);
     try {
       const token = await getIdToken();
-      if (!token) {
-        toast.error("Session expired. Please sign in again.");
-        setLoading(false);
-        return;
-      }
+      if (!token) { toast.error("Session expired."); setLoading(false); return; }
       const res = await fetch("/api/resume", {
         headers: { Authorization: `Bearer ${token}` },
       });
@@ -190,17 +186,21 @@ function DashboardContent() {
     setUpgrading(true);
     try {
       const token = await getIdToken();
-      if (!token) {
-        toast.error("Session expired. Please sign in again.");
-        return;
-      }
-      const res  = await fetch("/api/payments/checkout", { method: "POST", headers: { Authorization: `Bearer ${token}` } });
+      if (!token) { toast.error("Session expired."); return; }
+      const res  = await fetch("/api/payments/checkout", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
       const data = await res.json();
       if (data.url) { window.location.href = data.url; return; }
       throw new Error(data.error ?? "No URL");
     } catch (err: unknown) {
       const msg = (err as Error).message;
-      toast.error(msg === "You already have a premium account." ? "You already have premium! Refresh the page." : "Could not start checkout. Try again.");
+      toast.error(
+        msg === "You already have a premium account."
+          ? "You already have premium! Refresh the page."
+          : "Could not start checkout. Try again."
+      );
     } finally {
       setUpgrading(false);
     }
@@ -348,7 +348,7 @@ function DashboardContent() {
                 <div className="banner-icon">✦</div>
                 <div>
                   <div className="banner-title">Unlock AI-powered resume writing</div>
-                  <div className="banner-sub">One-time payment of $2 — review 1 full resume and generate content for 1 full resume.</div>
+                  <div className="banner-sub">One-time payment — review 1 full resume and generate content for 1 full resume.</div>
                 </div>
               </div>
               <button
@@ -418,7 +418,6 @@ function DashboardContent() {
   );
 }
 
-// ─── LOADING FALLBACK ─────────────────────────────────────────
 function DashboardFallback() {
   return (
     <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh" }}>
@@ -427,7 +426,6 @@ function DashboardFallback() {
   );
 }
 
-// ─── EXPORT ───────────────────────────────────────────────────
 export default function DashboardPage() {
   return (
     <Suspense fallback={<DashboardFallback />}>

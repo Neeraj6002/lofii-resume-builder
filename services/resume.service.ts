@@ -1,49 +1,89 @@
-// services/user.service.ts
+// services/resume.service.ts
 // ============================================================
-// USER SERVICE (CLIENT-SIDE)
-// Helpers for billing portal and checkout.
+// RESUME SERVICE
+// Client-side helpers for all resume API calls.
+// Centralises fetch logic so pages stay clean.
 // ============================================================
 
-// ─── Start checkout ───────────────────────────────────────────
-export async function startCheckout(idToken: string): Promise<string> {
-  const res = await fetch("/api/payments/checkout", {
-    method: "POST",
+import type { ResumeData } from "@/types";
+
+async function authFetch(
+  url: string,
+  idToken: string,
+  options: RequestInit = {}
+): Promise<Response> {
+  return fetch(url, {
+    ...options,
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${idToken}`,
+      ...(options.headers ?? {}),
     },
   });
-
-  const data = await res.json();
-
-  if (!res.ok) {
-    throw new Error(data.error ?? "Checkout failed");
-  }
-
-  if (!data.url) throw new Error("No checkout URL returned");
-  return data.url as string;
 }
 
-// ─── Get billing info ─────────────────────────────────────────
-export async function getBillingInfo(idToken: string): Promise<{
-  isPremium: boolean;
-  subscription: {
-    status: string;
-    plan: string | null;
-    purchasedAt: unknown;
-    transactionHistory: Array<{
-      transactionId: string;
-      amount: number;
-      currency: string;
-      status: string;
-      date: unknown;
-    }>;
-  };
-}> {
-  const res = await fetch("/api/payments/portal", {
-    headers: { Authorization: `Bearer ${idToken}` },
-  });
+// ─── List all resumes for the user ────────────────────────────
+export async function listResumes(
+  idToken: string
+): Promise<Pick<ResumeData, "id" | "title" | "template" | "updatedAt" | "lastReviewScore">[]> {
+  const res = await authFetch("/api/resume", idToken);
+  if (!res.ok) throw new Error("Failed to fetch resumes");
+  const data = await res.json();
+  return data.resumes;
+}
 
-  if (!res.ok) throw new Error("Failed to fetch billing info");
+// ─── Get a single resume by ID ────────────────────────────────
+export async function getResume(
+  id: string,
+  idToken: string
+): Promise<ResumeData> {
+  const res = await authFetch(`/api/resume/${id}`, idToken);
+  if (res.status === 404) throw new Error("NOT_FOUND");
+  if (res.status === 403) throw new Error("FORBIDDEN");
+  if (!res.ok) throw new Error("Failed to fetch resume");
+  const data = await res.json();
+  return data.resume;
+}
+
+// ─── Create a new resume ──────────────────────────────────────
+export async function createResume(
+  payload: Omit<ResumeData, "id" | "userId" | "createdAt" | "updatedAt" | "lastReviewScore">,
+  idToken: string
+): Promise<{ id: string }> {
+  const res = await authFetch("/api/resume", idToken, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const data = await res.json();
+    throw new Error(data.error ?? "Failed to create resume");
+  }
   return res.json();
+}
+
+// ─── Update an existing resume ────────────────────────────────
+export async function updateResume(
+  id: string,
+  payload: Partial<Omit<ResumeData, "id" | "userId" | "createdAt">>,
+  idToken: string
+): Promise<void> {
+  const res = await authFetch(`/api/resume/${id}`, idToken, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const data = await res.json();
+    throw new Error(data.error ?? "Failed to update resume");
+  }
+}
+
+// ─── Delete a resume ──────────────────────────────────────────
+export async function deleteResume(
+  id: string,
+  idToken: string
+): Promise<void> {
+  const res = await authFetch(`/api/resume/${id}`, idToken, {
+    method: "DELETE",
+  });
+  if (!res.ok) throw new Error("Failed to delete resume");
 }

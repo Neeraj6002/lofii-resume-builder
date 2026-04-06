@@ -27,6 +27,12 @@ export async function startCheckout(idToken: string): Promise<string> {
 // ─── Get billing info ─────────────────────────────────────────
 export async function getBillingInfo(idToken: string): Promise<{
   isPremium: boolean;
+  // Credits remaining after purchase
+  // Each starts at 1 on payment; consumed by review / builder routes
+  credits: {
+    review:  number;
+    builder: number;
+  };
   subscription: {
     status: string;
     plan: string | null;

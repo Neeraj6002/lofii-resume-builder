@@ -202,3 +202,22 @@ export interface ApiResponse<T> {
   error?: string;
   code?:  number;
 }
+
+// Add this interface — place it right before UserProfile
+export interface UserCredits {
+  review:  number;
+  builder: number;
+}
+
+// Then update UserProfile to include credits
+export interface UserProfile {
+  uid:          string;
+  email:        string;
+  displayName:  string;
+  photoURL:     string | null;
+  createdAt:    Timestamp;
+  isPremium:    boolean;
+  credits:      UserCredits;        // ← this line is new
+  subscription: UserSubscription;
+  resumeIds:    string[];
+}

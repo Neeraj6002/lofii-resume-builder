@@ -1,17 +1,9 @@
-// ============================================================
-// SERVER AUTH UTILITIES
-// Verifies Firebase ID tokens in API routes.
-// Never trusts client-provided user data directly.
-// ============================================================
+// lib/firebase/auth.ts
 
 import { getAdminAuth, getAdminDb } from "./admin";
 import type { DecodedIdToken } from "firebase-admin/auth";
 import type { UserProfile } from "@/types";
 
-/**
- * Verifies the Authorization Bearer token from request headers.
- * Returns decoded token or throws — never returns null silently.
- */
 export async function verifyAuthToken(
   authHeader: string | null
 ): Promise<DecodedIdToken> {
@@ -23,29 +15,40 @@ export async function verifyAuthToken(
 
   try {
     const adminAuth = getAdminAuth();
-    const decoded = await adminAuth.verifyIdToken(token, true); // checkRevoked=true
+    const decoded = await adminAuth.verifyIdToken(token, true);
     return decoded;
   } catch (err) {
-    // Map Firebase error codes to safe messages
     throw new Error("UNAUTHORIZED");
   }
 }
 
 /**
  * Gets the full user profile from Firestore.
- * Used to check premium status server-side.
+ * Defensively backfills credits for users created before the credits system.
  */
 export async function getUserProfile(uid: string): Promise<UserProfile | null> {
   const adminDb = getAdminDb();
   const snap = await adminDb.collection("users").doc(uid).get();
   if (!snap.exists) return null;
-  return snap.data() as UserProfile;
+
+  const data = snap.data()!;
+
+  // ── Backfill credits for pre-credits users ────────────────
+  // Users created before this field existed won't have it in Firestore.
+  // We normalise here so every caller can safely read credits.review / credits.builder
+  // without optional chaining throughout the codebase.
+  // Note: this does NOT write back to Firestore — it's an in-memory default only.
+  // Credits are only granted via the payment webhook, never auto-assigned.
+  if (!data.credits) {
+    data.credits = { review: 0, builder: 0 };
+  } else {
+    data.credits.review  = data.credits.review  ?? 0;
+    data.credits.builder = data.credits.builder ?? 0;
+  }
+
+  return data as UserProfile;
 }
 
-/**
- * Checks if a user has an active premium subscription.
- * Called in AI and review API routes.
- */
 export async function requirePremium(uid: string): Promise<void> {
   const profile = await getUserProfile(uid);
   if (!profile?.isPremium) {
@@ -69,25 +72,30 @@ export async function ensureUserProfile(
 
   if (!snap.exists) {
     const now = new Date();
-    const profile: Omit<UserProfile, "createdAt" | "updatedAt"> & {
-      createdAt: Date;
-    } = {
+
+    // Let TS infer the shape — no manual Omit cast needed here
+    const profile = {
       uid,
       email,
       displayName,
       photoURL,
-      createdAt: now,
-      isPremium: false,
+      createdAt:  now,
+      isPremium:  false,
+      credits: {
+        review:  0,
+        builder: 0,
+      },
       subscription: {
-        status: "inactive",
-        plan: null,
-        dodoCustomerId: null,
-        dodoPaymentId: null,
-        purchasedAt: null,
+        status:             "inactive" as const,
+        plan:               null,
+        dodoCustomerId:     null,
+        dodoPaymentId:      null,
+        purchasedAt:        null,
         transactionHistory: [],
       },
       resumeIds: [],
     };
+
     await ref.set(profile);
   }
 }
