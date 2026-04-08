@@ -19,18 +19,18 @@ import { useAuth } from "@/hooks/useAuth";
 import { toast } from "sonner";
 
 // ─── Types ────────────────────────────────────────────────────
-type StepType = 0 | 1 | 2 | 3;
+type StepType = 0 | 1 | 2 | 3 | 4;
 
 interface StepLabelItem {
-  n: number;
+  n:     number;
   label: string;
 }
 
 interface StepDotProps {
-  n: number;
-  label: string;
+  n:      number;
+  label:  string;
   active: boolean;
-  done: boolean;
+  done:   boolean;
 }
 
 // ─── PDF text extraction via pdfjs-dist ──────────────────────
@@ -40,7 +40,7 @@ async function extractPDF(file: File): Promise<string> {
     reader.onload = async (e: ProgressEvent<FileReader>) => {
       try {
         const typedArray = new Uint8Array(e.target?.result as ArrayBuffer);
-        const pdfjsLib = await import("pdfjs-dist");
+        const pdfjsLib   = await import("pdfjs-dist");
 
         pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
           "pdfjs-dist/build/pdf.worker.min.mjs",
@@ -48,15 +48,13 @@ async function extractPDF(file: File): Promise<string> {
         ).toString();
 
         const pdf = await pdfjsLib.getDocument({ data: typedArray }).promise;
-        let text = "";
+        let text  = "";
 
         for (let i = 1; i <= pdf.numPages; i++) {
-          const page = await pdf.getPage(i);
+          const page    = await pdf.getPage(i);
           const content = await page.getTextContent();
           const strings = content.items.map((item) => {
-            if ("str" in item && typeof item.str === "string") {
-              return item.str;
-            }
+            if ("str" in item && typeof item.str === "string") return item.str;
             return "";
           });
           text += strings.join(" ") + "\n";
@@ -74,9 +72,9 @@ async function extractPDF(file: File): Promise<string> {
 
 // ─── DOCX text extraction via mammoth ────────────────────────
 async function extractDOCX(file: File): Promise<string> {
-  const mammoth = await import("mammoth");
+  const mammoth     = await import("mammoth");
   const arrayBuffer = await file.arrayBuffer();
-  const result = await mammoth.extractRawText({ arrayBuffer });
+  const result      = await mammoth.extractRawText({ arrayBuffer });
   return result.value.trim();
 }
 
@@ -86,12 +84,8 @@ function validateFile(file: File): string | null {
     "application/pdf",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   ];
-  if (!allowed.includes(file.type)) {
-    return "Only PDF and DOCX files are supported.";
-  }
-  if (file.size > 5 * 1024 * 1024) {
-    return "File must be under 5MB.";
-  }
+  if (!allowed.includes(file.type))  return "Only PDF and DOCX files are supported.";
+  if (file.size > 5 * 1024 * 1024)  return "File must be under 5MB.";
   return null;
 }
 
@@ -102,45 +96,35 @@ function StepDot({ n, label, active, done }: StepDotProps): ReactElement {
       <div className={`step-dot${active ? " active" : ""}${done ? " done" : ""}`}>
         {done ? (
           <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-            <path
-              d="M2 6l3 3 5-5"
-              stroke="currentColor"
-              strokeWidth="1.5"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
+            <path d="M2 6l3 3 5-5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
           </svg>
-        ) : (
-          n
-        )}
+        ) : n}
       </div>
       <span className={`step-label${active ? " active" : ""}`}>{label}</span>
     </div>
   );
 }
 
-// ─── INNER FORM (uses useSearchParams — must be inside Suspense) ──
+// ─── INNER FORM ───────────────────────────────────────────────
 function ReviewUploadForm(): ReactElement {
-  const router = useRouter();
+  const router       = useRouter();
   const searchParams = useSearchParams();
   const { user, getIdToken } = useAuth();
 
+  // If coming from dashboard with an existing built resume
   const resumeId = searchParams.get("resumeId");
 
   const [dragOver, setDragOver] = useState<boolean>(false);
-  const [file, setFile] = useState<File | null>(null);
-  const [step, setStep] = useState<StepType>(0);
-  const [error, setError] = useState<string>("");
+  const [file,     setFile]     = useState<File | null>(null);
+  const [step,     setStep]     = useState<StepType>(0);
+  const [error,    setError]    = useState<string>("");
   const [progress, setProgress] = useState<number>(0);
 
   const inputRef = useRef<HTMLInputElement>(null);
 
   const handleFile = useCallback((selected: File): void => {
     const err = validateFile(selected);
-    if (err) {
-      setError(err);
-      return;
-    }
+    if (err) { setError(err); return; }
     setError("");
     setFile(selected);
   }, []);
@@ -164,10 +148,11 @@ function ReviewUploadForm(): ReactElement {
   );
 
   useEffect(() => {
-    if (step === 0) setProgress(0);
-    else if (step === 1) setProgress(30);
-    else if (step === 2) setProgress(65);
-    else if (step === 3) setProgress(100);
+    if      (step === 0) setProgress(0);
+    else if (step === 1) setProgress(20);
+    else if (step === 2) setProgress(45);
+    else if (step === 3) setProgress(70);
+    else if (step === 4) setProgress(100);
   }, [step]);
 
   const handleReview = useCallback(async (): Promise<void> => {
@@ -175,6 +160,7 @@ function ReviewUploadForm(): ReactElement {
     setError("");
 
     try {
+      // ── Step 1: Extract text client-side ─────────────────
       setStep(1);
       let resumeText = "";
 
@@ -189,65 +175,78 @@ function ReviewUploadForm(): ReactElement {
           "Could not extract enough text from the file. Make sure it is not a scanned image PDF."
         );
       }
-
       if (resumeText.length > 15000) {
         resumeText = resumeText.slice(0, 15000);
       }
 
+      // ── Step 2: Upload file to Firebase Storage ───────────
       setStep(2);
-
       const token = await getIdToken();
-      if (!token) {
-        throw new Error("Session expired. Please sign in again.");
+      if (!token) throw new Error("Session expired. Please sign in again.");
+
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const uploadRes = await fetch("/api/upload", {
+        method:  "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        body:    formData,
+      });
+
+      if (!uploadRes.ok) {
+        const uploadData = await uploadRes.json();
+        throw new Error(uploadData.error ?? "Failed to upload file.");
       }
 
+      const { uploadedResumeId } = await uploadRes.json();
+
+      // ── Step 3: Run AI review ─────────────────────────────
+      setStep(3);
+
       const headers: Record<string, string> = {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
+        "Content-Type":    "application/json",
+        Authorization:     `Bearer ${token}`,
+        // Pass the uploaded resume doc ID so the review API
+        // can update lastReviewScore on the uploadedResumes doc
+        "x-uploaded-resume-id": uploadedResumeId,
       };
 
+      // Also pass built-resume ID if this was triggered from a built resume
       if (resumeId) {
         headers["x-resume-id"] = resumeId;
       }
 
-      const res = await fetch("/api/ai/review-resume", {
+      const res  = await fetch("/api/ai/review-resume", {
         method: "POST",
         headers,
-        body: JSON.stringify({ resumeText }),
+        body:   JSON.stringify({ resumeText }),
       });
-
       const data = await res.json();
 
       if (!res.ok) {
-        if (res.status === 429) {
-          throw new Error(
-            "Too many review requests. Please wait a few minutes."
-          );
-        }
-        if (res.status === 503) {
-          throw new Error(
-            "AI service is temporarily unavailable. Try again in a moment."
-          );
-        }
+        if (res.status === 429) throw new Error("Too many review requests. Please wait a few minutes.");
+        if (res.status === 503) throw new Error("AI service is temporarily unavailable. Try again in a moment.");
         throw new Error(data.error ?? "Review failed.");
       }
 
-      setStep(3);
+      // ── Step 4: Navigate to results ───────────────────────
+      setStep(4);
 
       const reviewId = crypto.randomUUID();
       sessionStorage.setItem(
         `review:${reviewId}`,
         JSON.stringify({
           ...data,
-          fileName: file.name,
-          reviewedAt: new Date().toISOString(),
-          resumeId: resumeId ?? null,
+          fileName:          file.name,
+          reviewedAt:        new Date().toISOString(),
+          resumeId:          resumeId ?? null,
+          uploadedResumeId,
         })
       );
 
-      await new Promise((r) => setTimeout(r, 600));
-
+      await new Promise((r) => setTimeout(r, 500));
       router.push(`/review/${reviewId}`);
+
     } catch (err: unknown) {
       setStep(0);
       setProgress(0);
@@ -257,182 +256,86 @@ function ReviewUploadForm(): ReactElement {
     }
   }, [file, user, getIdToken, resumeId, router]);
 
-  const isProcessing = step > 0 && step < 3;
+  const isProcessing = step > 0 && step < 4;
 
   const stepLabels: StepLabelItem[] = [
-    { n: 1, label: "Upload" },
+    { n: 1, label: "Upload"  },
     { n: 2, label: "Extract" },
-    { n: 3, label: "Analyse" },
-    { n: 4, label: "Results" },
+    { n: 3, label: "Save"    },
+    { n: 4, label: "Analyse" },
+    { n: 5, label: "Results" },
   ];
+
+  const processingLabel = () => {
+    if (step === 1) return "Extracting text from your resume…";
+    if (step === 2) return "Saving file to storage…";
+    if (step === 3) return "Analysing with AI — this takes ~15 seconds…";
+    return "";
+  };
+  const processingSub = () => {
+    if (step === 1) return "Reading your PDF or DOCX file";
+    if (step === 2) return "Uploading to Firebase Storage";
+    if (step === 3) return "Checking ATS compatibility, keywords, impact, and more";
+    return "";
+  };
 
   return (
     <>
       <style>{`
-        .review-page {
-          min-height: 100vh;
-          display: flex; flex-direction: column;
-        }
+        .review-page { min-height: 100vh; display: flex; flex-direction: column; }
 
-        /* ── Topbar ── */
-        .topbar {
-          position: sticky; top: 0; z-index: var(--z-sticky);
-          height: var(--nav-height);
-          display: flex; align-items: center; justify-content: space-between;
-          padding: 0 5vw;
-          background: var(--bg-overlay); backdrop-filter: blur(18px);
-          border-bottom: 1px solid var(--border);
-        }
+        .topbar { position: sticky; top: 0; z-index: var(--z-sticky); height: var(--nav-height); display: flex; align-items: center; justify-content: space-between; padding: 0 5vw; background: var(--bg-overlay); backdrop-filter: blur(18px); border-bottom: 1px solid var(--border); }
         .topbar-logo { font-family: var(--font-display); font-size: 1.3rem; font-weight: 900; color: var(--text-primary); text-decoration: none; letter-spacing: -0.02em; }
         .topbar-logo span { color: var(--gold); }
         .back-link { color: var(--text-secondary); text-decoration: none; display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-sm); transition: color var(--duration-base); }
         .back-link:hover { color: var(--text-primary); }
 
-        /* ── Content ── */
-        .review-content {
-          flex: 1; display: flex; align-items: center; justify-content: center;
-          padding: var(--space-10) var(--space-6);
-        }
-        .review-card {
-          width: 100%; max-width: 560px;
-          animation: fade-up 0.4s var(--ease) both;
-        }
+        .review-content { flex: 1; display: flex; align-items: center; justify-content: center; padding: var(--space-10) var(--space-6); }
+        .review-card { width: 100%; max-width: 560px; animation: fade-up 0.4s var(--ease) both; }
 
-        /* ── Heading ── */
-        .review-heading {
-          font-family: var(--font-display);
-          font-size: var(--text-4xl); font-weight: 700;
-          color: var(--text-primary); margin-bottom: var(--space-2);
-          letter-spacing: -0.02em;
-        }
-        .review-sub {
-          font-size: var(--text-md); color: var(--text-secondary);
-          margin-bottom: var(--space-8); font-weight: 300; line-height: 1.7;
-        }
+        .review-heading { font-family: var(--font-display); font-size: var(--text-4xl); font-weight: 700; color: var(--text-primary); margin-bottom: var(--space-2); letter-spacing: -0.02em; }
+        .review-sub { font-size: var(--text-md); color: var(--text-secondary); margin-bottom: var(--space-8); font-weight: 300; line-height: 1.7; }
 
-        /* ── Steps ── */
-        .steps-row {
-          display: flex; align-items: center; gap: 0;
-          margin-bottom: var(--space-8);
-        }
-        .step-dot-wrap {
-          display: flex; flex-direction: column; align-items: center; gap: var(--space-1);
-        }
-        .step-dot {
-          width: 28px; height: 28px; border-radius: 50%;
-          background: var(--bg-elevated); border: 1px solid var(--border);
-          display: flex; align-items: center; justify-content: center;
-          font-size: var(--text-xs); font-weight: 700; color: var(--text-disabled);
-          transition: all 0.3s var(--ease);
-        }
+        .steps-row { display: flex; align-items: center; gap: 0; margin-bottom: var(--space-8); }
+        .step-dot-wrap { display: flex; flex-direction: column; align-items: center; gap: var(--space-1); }
+        .step-dot { width: 28px; height: 28px; border-radius: 50%; background: var(--bg-elevated); border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; font-size: var(--text-xs); font-weight: 700; color: var(--text-disabled); transition: all 0.3s var(--ease); }
         .step-dot.active { background: var(--gold-dim); border-color: var(--gold-border); color: var(--gold-light); }
         .step-dot.done   { background: var(--success-dim); border-color: rgba(74,222,128,0.3); color: var(--success); }
         .step-label { font-size: var(--text-xs); color: var(--text-disabled); white-space: nowrap; }
         .step-label.active { color: var(--text-secondary); }
-        .step-connector {
-          flex: 1; height: 1px; background: var(--border);
-          margin: 0 var(--space-2); margin-bottom: var(--space-5);
-        }
+        .step-connector { flex: 1; height: 1px; background: var(--border); margin: 0 var(--space-2); margin-bottom: var(--space-5); }
 
-        /* Progress bar */
-        .progress-wrap {
-          height: 3px; background: var(--bg-elevated);
-          border-radius: 99px; margin-bottom: var(--space-8);
-          overflow: hidden;
-        }
-        .progress-bar {
-          height: 100%; background: var(--gold);
-          border-radius: 99px;
-          transition: width 0.6s var(--ease);
-        }
+        .progress-wrap { height: 3px; background: var(--bg-elevated); border-radius: 99px; margin-bottom: var(--space-8); overflow: hidden; }
+        .progress-bar  { height: 100%; background: var(--gold); border-radius: 99px; transition: width 0.6s var(--ease); }
 
-        /* ── Drop zone ── */
-        .drop-zone {
-          border: 2px dashed var(--border);
-          border-radius: var(--radius-lg);
-          padding: var(--space-12) var(--space-8);
-          text-align: center; cursor: pointer;
-          transition: all 0.2s var(--ease);
-          background: var(--bg-surface);
-          position: relative;
-        }
-        .drop-zone:hover,
-        .drop-zone.over { border-color: var(--gold-border); background: var(--gold-dim); }
+        .drop-zone { border: 2px dashed var(--border); border-radius: var(--radius-lg); padding: var(--space-12) var(--space-8); text-align: center; cursor: pointer; transition: all 0.2s var(--ease); background: var(--bg-surface); position: relative; }
+        .drop-zone:hover, .drop-zone.over { border-color: var(--gold-border); background: var(--gold-dim); }
         .drop-zone.has-file { border-color: var(--gold-border); border-style: solid; }
 
-        .drop-icon {
-          width: 52px; height: 52px; margin: 0 auto var(--space-4);
-          background: var(--gold-dim); border: 1px solid var(--gold-border);
-          border-radius: var(--radius-lg);
-          display: flex; align-items: center; justify-content: center;
-        }
+        .drop-icon  { width: 52px; height: 52px; margin: 0 auto var(--space-4); background: var(--gold-dim); border: 1px solid var(--gold-border); border-radius: var(--radius-lg); display: flex; align-items: center; justify-content: center; }
         .drop-title { font-size: var(--text-lg); font-weight: 600; color: var(--text-primary); margin-bottom: var(--space-2); }
         .drop-sub   { font-size: var(--text-sm); color: var(--text-secondary); margin-bottom: var(--space-4); }
         .drop-types { display: flex; align-items: center; justify-content: center; gap: var(--space-2); }
 
-        /* File selected state */
-        .file-selected {
-          display: flex; align-items: center; gap: var(--space-3);
-          background: var(--bg-elevated); border: 1px solid var(--border);
-          border-radius: var(--radius-md); padding: var(--space-4);
-          margin-top: var(--space-4);
-        }
-        .file-icon {
-          width: 36px; height: 36px; background: var(--gold-dim);
-          border: 1px solid var(--gold-border); border-radius: var(--radius-sm);
-          display: flex; align-items: center; justify-content: center; flex-shrink: 0;
-        }
+        .file-selected { display: flex; align-items: center; gap: var(--space-3); background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius-md); padding: var(--space-4); margin-top: var(--space-4); }
+        .file-icon { width: 36px; height: 36px; background: var(--gold-dim); border: 1px solid var(--gold-border); border-radius: var(--radius-sm); display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
         .file-name { font-size: var(--text-sm); font-weight: 600; color: var(--text-primary); }
         .file-size { font-size: var(--text-xs); color: var(--text-secondary); margin-top: 2px; }
-        .file-remove {
-          margin-left: auto; background: none; border: none;
-          color: var(--text-secondary); cursor: pointer; padding: var(--space-1);
-          display: flex; transition: color var(--duration-fast);
-        }
+        .file-remove { margin-left: auto; background: none; border: none; color: var(--text-secondary); cursor: pointer; padding: var(--space-1); display: flex; transition: color var(--duration-fast); }
         .file-remove:hover { color: var(--error); }
 
-        /* ── Processing state ── */
-        .processing-state {
-          text-align: center; padding: var(--space-6) 0;
-        }
-        .processing-spinner {
-          width: 40px; height: 40px;
-          border: 3px solid var(--bg-elevated);
-          border-top-color: var(--gold);
-          border-radius: 50%;
-          animation: spin 0.8s linear infinite;
-          margin: 0 auto var(--space-4);
-        }
-        .processing-label { font-size: var(--text-md); font-weight: 500; color: var(--text-primary); margin-bottom: var(--space-2); }
-        .processing-sub   { font-size: var(--text-sm); color: var(--text-secondary); }
+        .processing-state   { text-align: center; padding: var(--space-6) 0; }
+        .processing-spinner { width: 40px; height: 40px; border: 3px solid var(--bg-elevated); border-top-color: var(--gold); border-radius: 50%; animation: spin 0.8s linear infinite; margin: 0 auto var(--space-4); }
+        .processing-label   { font-size: var(--text-md); font-weight: 500; color: var(--text-primary); margin-bottom: var(--space-2); }
+        .processing-sub     { font-size: var(--text-sm); color: var(--text-secondary); }
 
-        /* ── Error ── */
-        .review-error {
-          background: var(--error-dim); border: 1px solid rgba(248,113,113,0.2);
-          border-radius: var(--radius-md); padding: var(--space-3) var(--space-4);
-          font-size: var(--text-sm); color: var(--error);
-          margin-top: var(--space-4);
-          display: flex; align-items: flex-start; gap: var(--space-2);
-        }
+        .review-error { background: var(--error-dim); border: 1px solid rgba(248,113,113,0.2); border-radius: var(--radius-md); padding: var(--space-3) var(--space-4); font-size: var(--text-sm); color: var(--error); margin-top: var(--space-4); display: flex; align-items: flex-start; gap: var(--space-2); }
 
-        /* ── What we check ── */
-        .checks-grid {
-          display: grid; grid-template-columns: 1fr 1fr;
-          gap: var(--space-3); margin-top: var(--space-8);
-        }
-        .check-item {
-          display: flex; align-items: center; gap: var(--space-2);
-          font-size: var(--text-sm); color: var(--text-secondary);
-        }
+        .checks-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); margin-top: var(--space-8); }
+        .check-item  { display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-sm); color: var(--text-secondary); }
         .check-item::before { content: '✦'; color: var(--gold); font-size: 0.65rem; flex-shrink: 0; }
 
-        /* ── Free tier note ── */
-        .free-note {
-          display: flex; align-items: flex-start; gap: var(--space-3);
-          background: var(--bg-elevated); border: 1px solid var(--border);
-          border-radius: var(--radius-md); padding: var(--space-4);
-          margin-top: var(--space-6); font-size: var(--text-sm);
-        }
+        .free-note      { display: flex; align-items: flex-start; gap: var(--space-3); background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius-md); padding: var(--space-4); margin-top: var(--space-6); font-size: var(--text-sm); }
         .free-note-icon { flex-shrink: 0; color: var(--gold); margin-top: 1px; }
         .free-note-text { color: var(--text-secondary); line-height: 1.6; }
         .free-note-text strong { color: var(--text-primary); font-weight: 600; }
@@ -443,18 +346,10 @@ function ReviewUploadForm(): ReactElement {
 
       <div className="review-page">
         <header className="topbar">
-          <Link href="/" className="topbar-logo">
-            Resu<span>MAI</span>
-          </Link>
+          <Link href="/" className="topbar-logo">Resu<span>MAI</span></Link>
           <Link href="/dashboard" className="back-link">
             <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-              <path
-                d="M9 11L5 7l4-4"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
+              <path d="M9 11L5 7l4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
             </svg>
             Dashboard
           </Link>
@@ -471,15 +366,8 @@ function ReviewUploadForm(): ReactElement {
             <div className="steps-row">
               {stepLabels.map((s, i) => (
                 <Fragment key={s.n}>
-                  <StepDot
-                    n={s.n}
-                    label={s.label}
-                    active={step === i}
-                    done={step > i}
-                  />
-                  {i < stepLabels.length - 1 && (
-                    <div key={`conn-${i}`} className="step-connector" />
-                  )}
+                  <StepDot n={s.n} label={s.label} active={step === i} done={step > i} />
+                  {i < stepLabels.length - 1 && <div key={`conn-${i}`} className="step-connector" />}
                 </Fragment>
               ))}
             </div>
@@ -491,26 +379,14 @@ function ReviewUploadForm(): ReactElement {
             {isProcessing ? (
               <div className="processing-state">
                 <div className="processing-spinner" />
-                <div className="processing-label">
-                  {step === 1 && "Extracting text from your resume…"}
-                  {step === 2 && "Analysing with AI — this takes ~15 seconds…"}
-                </div>
-                <p className="processing-sub">
-                  {step === 1 && "Reading your PDF or DOCX file"}
-                  {step === 2 &&
-                    "Checking ATS compatibility, keywords, impact, and more"}
-                </p>
+                <div className="processing-label">{processingLabel()}</div>
+                <p className="processing-sub">{processingSub()}</p>
               </div>
             ) : (
               <>
                 <div
-                  className={`drop-zone${dragOver ? " over" : ""}${
-                    file ? " has-file" : ""
-                  }`}
-                  onDragOver={(e: DragEvent<HTMLDivElement>) => {
-                    e.preventDefault();
-                    setDragOver(true);
-                  }}
+                  className={`drop-zone${dragOver ? " over" : ""}${file ? " has-file" : ""}`}
+                  onDragOver={(e: DragEvent<HTMLDivElement>) => { e.preventDefault(); setDragOver(true); }}
                   onDragLeave={() => setDragOver(false)}
                   onDrop={onDrop}
                   onClick={() => !file && inputRef.current?.click()}
@@ -526,25 +402,9 @@ function ReviewUploadForm(): ReactElement {
                   {!file ? (
                     <>
                       <div className="drop-icon">
-                        <svg
-                          width="24"
-                          height="24"
-                          viewBox="0 0 24 24"
-                          fill="none"
-                        >
-                          <path
-                            d="M12 2v13M8 7l4-5 4 5"
-                            stroke="var(--gold)"
-                            strokeWidth="1.8"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                          />
-                          <path
-                            d="M20 17v3a1 1 0 01-1 1H5a1 1 0 01-1-1v-3"
-                            stroke="var(--gold)"
-                            strokeWidth="1.8"
-                            strokeLinecap="round"
-                          />
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+                          <path d="M12 2v13M8 7l4-5 4 5" stroke="var(--gold)" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+                          <path d="M20 17v3a1 1 0 01-1 1H5a1 1 0 01-1-1v-3" stroke="var(--gold)" strokeWidth="1.8" strokeLinecap="round"/>
                         </svg>
                       </div>
                       <div className="drop-title">Drop your resume here</div>
@@ -552,76 +412,33 @@ function ReviewUploadForm(): ReactElement {
                       <div className="drop-types">
                         <span className="badge badge-muted">PDF</span>
                         <span className="badge badge-muted">DOCX</span>
-                        <span
-                          style={{
-                            fontSize: "var(--text-xs)",
-                            color: "var(--text-disabled)",
-                          }}
-                        >
-                          • Max 5MB
-                        </span>
+                        <span style={{ fontSize: "var(--text-xs)", color: "var(--text-disabled)" }}>• Max 5MB</span>
                       </div>
                     </>
                   ) : (
-                    <div
-                      className="drop-title"
-                      style={{ color: "var(--gold-light)" }}
-                    >
-                      ✓ File ready to review
-                    </div>
+                    <div className="drop-title" style={{ color: "var(--gold-light)" }}>✓ File ready to review</div>
                   )}
                 </div>
 
                 {file && (
                   <div className="file-selected">
                     <div className="file-icon">
-                      <svg
-                        width="18"
-                        height="18"
-                        viewBox="0 0 18 18"
-                        fill="none"
-                      >
-                        <path
-                          d="M10 2H5a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2V7l-5-5z"
-                          stroke="var(--gold)"
-                          strokeWidth="1.4"
-                        />
-                        <path
-                          d="M10 2v5h5"
-                          stroke="var(--gold)"
-                          strokeWidth="1.4"
-                          strokeLinecap="round"
-                        />
+                      <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                        <path d="M10 2H5a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2V7l-5-5z" stroke="var(--gold)" strokeWidth="1.4"/>
+                        <path d="M10 2v5h5" stroke="var(--gold)" strokeWidth="1.4" strokeLinecap="round"/>
                       </svg>
                     </div>
                     <div>
                       <div className="file-name">{file.name}</div>
-                      <div className="file-size">
-                        {(file.size / 1024).toFixed(0)} KB ·{" "}
-                        {file.type.includes("pdf") ? "PDF" : "DOCX"}
-                      </div>
+                      <div className="file-size">{(file.size / 1024).toFixed(0)} KB · {file.type.includes("pdf") ? "PDF" : "DOCX"}</div>
                     </div>
                     <button
                       className="file-remove"
-                      onClick={(e: MouseEvent<HTMLButtonElement>) => {
-                        e.stopPropagation();
-                        setFile(null);
-                        setError("");
-                      }}
+                      onClick={(e: MouseEvent<HTMLButtonElement>) => { e.stopPropagation(); setFile(null); setError(""); }}
                       title="Remove file"
                     >
-                      <svg
-                        width="14"
-                        height="14"
-                        viewBox="0 0 14 14"
-                        fill="none"
-                      >
-                        <path
-                          d="M2 2l10 10M12 2L2 12"
-                          stroke="currentColor"
-                          strokeWidth="1.4"
-                          strokeLinecap="round"
-                        />
+                      <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                        <path d="M2 2l10 10M12 2L2 12" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
                       </svg>
                     </button>
                   </div>
@@ -629,17 +446,8 @@ function ReviewUploadForm(): ReactElement {
 
                 {error && (
                   <div className="review-error">
-                    <svg
-                      width="15"
-                      height="15"
-                      viewBox="0 0 15 15"
-                      fill="none"
-                      style={{ flexShrink: 0, marginTop: 1 }}
-                    >
-                      <path
-                        d="M7.5 1a6.5 6.5 0 100 13A6.5 6.5 0 007.5 1zM7 4.5a.5.5 0 011 0v4a.5.5 0 01-1 0v-4zm.5 6.5a.75.75 0 110-1.5.75.75 0 010 1.5z"
-                        fill="currentColor"
-                      />
+                    <svg width="15" height="15" viewBox="0 0 15 15" fill="none" style={{ flexShrink: 0, marginTop: 1 }}>
+                      <path d="M7.5 1a6.5 6.5 0 100 13A6.5 6.5 0 007.5 1zM7 4.5a.5.5 0 011 0v4a.5.5 0 01-1 0v-4zm.5 6.5a.75.75 0 110-1.5.75.75 0 010 1.5z" fill="currentColor"/>
                     </svg>
                     {error}
                   </div>
@@ -657,48 +465,20 @@ function ReviewUploadForm(): ReactElement {
             )}
 
             <div className="checks-grid">
-              {[
-                "ATS Compatibility",
-                "Keyword Density",
-                "Quantified Impact",
-                "Summary Quality",
-                "Action Verbs",
-                "Skills Match",
-                "Length & Depth",
-                "Formatting",
-              ].map((c) => (
-                <div key={c} className="check-item">
-                  {c}
-                </div>
+              {["ATS Compatibility","Keyword Density","Quantified Impact","Summary Quality","Action Verbs","Skills Match","Length & Depth","Formatting"].map((c) => (
+                <div key={c} className="check-item">{c}</div>
               ))}
             </div>
 
             {!user?.isPremium && (
               <div className="free-note">
-                <svg
-                  className="free-note-icon"
-                  width="16"
-                  height="16"
-                  viewBox="0 0 16 16"
-                  fill="none"
-                >
-                  <circle cx="8" cy="8" r="6.5" stroke="currentColor" strokeWidth="1.2" />
-                  <path
-                    d="M8 7.5v4M8 5h.01"
-                    stroke="currentColor"
-                    strokeWidth="1.2"
-                    strokeLinecap="round"
-                  />
+                <svg className="free-note-icon" width="16" height="16" viewBox="0 0 16 16" fill="none">
+                  <circle cx="8" cy="8" r="6.5" stroke="currentColor" strokeWidth="1.2"/>
+                  <path d="M8 7.5v4M8 5h.01" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
                 </svg>
                 <p className="free-note-text">
-                  <strong>Free plan:</strong> you&apos;ll see your overall ATS
-                  score and 2 section previews.{" "}
-                  <Link
-                    href="/dashboard"
-                    style={{ color: "var(--gold)", fontWeight: 500 }}
-                  >
-                    Upgrade to Premium
-                  </Link>
+                  <strong>Free plan:</strong> you&apos;ll see your overall ATS score and 2 section previews.{" "}
+                  <Link href="/dashboard" style={{ color: "var(--gold)", fontWeight: 500 }}>Upgrade to Premium</Link>
                   {" "}to unlock all 8 categories and every actionable fix.
                 </p>
               </div>
@@ -710,32 +490,14 @@ function ReviewUploadForm(): ReactElement {
   );
 }
 
-// ─── LOADING FALLBACK ─────────────────────────────────────────
 function ReviewUploadFallback(): ReactElement {
   return (
-    <div
-      style={{
-        minHeight: "100vh",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-      }}
-    >
-      <div
-        style={{
-          width: 32,
-          height: 32,
-          border: "3px solid var(--bg-elevated)",
-          borderTopColor: "var(--gold)",
-          borderRadius: "50%",
-          animation: "spin 0.8s linear infinite",
-        }}
-      />
+    <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <div style={{ width: 32, height: 32, border: "3px solid var(--bg-elevated)", borderTopColor: "var(--gold)", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
     </div>
   );
 }
 
-// ─── EXPORT ───────────────────────────────────────────────────
 export const dynamic = "force-dynamic";
 
 export default function ReviewUploadPage(): ReactElement {

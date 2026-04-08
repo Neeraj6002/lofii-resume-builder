@@ -1,17 +1,17 @@
 // app/api/upload/route.ts
 // ============================================================
 // FILE UPLOAD API
-// Uploads resume files (PDF/DOCX) to Firebase Storage.
-// Files are stored under /resumes/{userId}/{filename}
-// Only the owner can access their uploaded files.
+// Uploads resume files (PDF/DOCX) to Firebase Storage and
+// saves metadata to Firestore `uploadedResumes` collection
+// so the dashboard can show uploaded resumes as cards.
 // ============================================================
 
-import { NextResponse } from "next/server";
-import { verifyAuthToken } from "@/lib/firebase/auth";
-import { getAdminStorage } from "@/lib/firebase/admin";
+import { NextResponse }       from "next/server";
+import { verifyAuthToken }    from "@/lib/firebase/auth";
+import { getAdminStorage, getAdminDb } from "@/lib/firebase/admin";
 
-const MAX_SIZE_BYTES  = 5 * 1024 * 1024; // 5MB
-const ALLOWED_TYPES   = [
+const MAX_SIZE_BYTES = 5 * 1024 * 1024; // 5 MB
+const ALLOWED_TYPES  = [
   "application/pdf",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 ];
@@ -47,13 +47,13 @@ export async function POST(request: Request) {
     }
 
     // ── 4. Upload to Firebase Storage ──────────────────────
-    const ext       = file.type === "application/pdf" ? "pdf" : "docx";
+    const fileType  = file.type === "application/pdf" ? "pdf" : "docx";
     const timestamp = Date.now();
-    const path      = `resumes/${uid}/${timestamp}.${ext}`;
+    const path      = `resumes/${uid}/${timestamp}.${fileType}`;
 
     const adminStorage = getAdminStorage();
-    const bucket    = adminStorage.bucket();
-    const fileRef   = bucket.file(path);
+    const bucket       = adminStorage.bucket();
+    const fileRef      = bucket.file(path);
 
     const arrayBuffer = await file.arrayBuffer();
     const buffer      = Buffer.from(arrayBuffer);
@@ -62,19 +62,30 @@ export async function POST(request: Request) {
       metadata: {
         contentType: file.type,
         metadata: {
-          uploadedBy: uid,          // Track owner
+          uploadedBy:   uid,
           originalName: file.name,
         },
       },
     });
 
-    // ── 5. Get signed download URL (1 hour expiry) ─────────
-    const [url] = await fileRef.getSignedUrl({
-      action:  "read",
-      expires: Date.now() + 60 * 60 * 1000, // 1 hour
+    // ── 5. Save metadata to Firestore ──────────────────────
+    // This allows the dashboard to list uploaded resumes.
+    const adminDb  = getAdminDb();
+    const docRef   = adminDb.collection("uploadedResumes").doc();
+    const docId    = docRef.id;
+
+    await docRef.set({
+      id:              docId,
+      userId:          uid,
+      fileName:        file.name,
+      storagePath:     path,
+      fileType,
+      uploadedAt:      new Date(),
+      lastReviewScore: null,
     });
 
-    return NextResponse.json({ url, path }, { status: 201 });
+    return NextResponse.json({ uploadedResumeId: docId, path }, { status: 201 });
+
   } catch (err) {
     const error = err as Error;
     if (error.message === "UNAUTHORIZED") {

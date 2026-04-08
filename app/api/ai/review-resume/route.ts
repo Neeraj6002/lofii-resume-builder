@@ -11,13 +11,13 @@
 //   Else              → gated report (score + 2 sections shown)
 // ============================================================
 
-import { NextResponse }                        from "next/server";
-import { verifyAuthToken, getUserProfile }      from "@/lib/firebase/auth";
-import { reviewResume }                        from "@/lib/ai/openrouter";
-import { ReviewRequestSchema }                 from "@/lib/schemas";
-import { checkRateLimit, reviewRateLimit }     from "@/lib/ratelimit";
-import { getAdminDb }                          from "@/lib/firebase/admin";
-import { FieldValue }                          from "firebase-admin/firestore";
+import { NextResponse }                    from "next/server";
+import { verifyAuthToken, getUserProfile } from "@/lib/firebase/auth";
+import { reviewResume }                    from "@/lib/ai/openrouter";
+import { ReviewRequestSchema }             from "@/lib/schemas";
+import { checkRateLimit, reviewRateLimit } from "@/lib/ratelimit";
+import { getAdminDb }                      from "@/lib/firebase/admin";
+import { FieldValue }                      from "firebase-admin/firestore";
 
 export async function POST(request: Request) {
   try {
@@ -50,13 +50,9 @@ export async function POST(request: Request) {
     console.info(`[Review] User ${uid} | isPremium: ${isPremium} | credits.review: ${reviewCredits}`);
 
     // ── 5. Run AI review ─────────────────────────────────────
-    // Always run the full review — gating is applied to the response,
-    // not to whether the AI is called. This ensures consistent scoring.
     const review = await reviewResume(resumeText);
 
     // ── 6. Gate response ─────────────────────────────────────
-    // Free / no credits: score + first 2 sections, fixes hidden
-    // Has credit: full report
     const hasReviewCredit = isPremium && reviewCredits >= 1;
 
     const gatedReview = {
@@ -68,8 +64,8 @@ export async function POST(request: Request) {
             category:  section.category,
             label:     section.label,
             score:     section.score,
-            issues:    [],       // hidden
-            isPremium: true,     // signals blur to frontend
+            issues:    [],
+            isPremium: true,
           };
         }
         return { ...section, isPremium: i >= 2 };
@@ -89,17 +85,14 @@ export async function POST(request: Request) {
       const userRef = adminDb.collection("users").doc(uid);
 
       await adminDb.runTransaction(async (tx) => {
-        const snap          = await tx.get(userRef);
+        const snap           = await tx.get(userRef);
         const currentReview  = snap.data()?.credits?.review  ?? 0;
         const currentBuilder = snap.data()?.credits?.builder ?? 0;
 
-        if (currentReview < 1) {
-          // Race condition — credit consumed between our check and now
-          throw new Error("NO_REVIEW_CREDITS");
-        }
+        if (currentReview < 1) throw new Error("NO_REVIEW_CREDITS");
 
-        const newReview     = currentReview - 1;
-        const stillPremium  = newReview > 0 || currentBuilder > 0;
+        const newReview    = currentReview - 1;
+        const stillPremium = newReview > 0 || currentBuilder > 0;
 
         tx.update(userRef, {
           "credits.review": FieldValue.increment(-1),
@@ -110,16 +103,29 @@ export async function POST(request: Request) {
       console.info(`[Review] ✓ Consumed review credit for user ${uid}`);
     }
 
-    // ── 8. Update resume score (if resumeId header present) ──
+    // ── 8. Update score on built resume (if x-resume-id header) ──
     const resumeId = request.headers.get("x-resume-id");
     if (resumeId) {
-      const adminDb  = getAdminDb();
+      const adminDb   = getAdminDb();
       const resumeDoc = await adminDb.collection("resumes").doc(resumeId).get();
 
       if (resumeDoc.exists && resumeDoc.data()?.userId === uid) {
         await adminDb.collection("resumes").doc(resumeId).update({
           lastReviewScore: review.overallScore,
           updatedAt:       new Date(),
+        });
+      }
+    }
+
+    // ── 9. Update score on uploaded resume (if x-uploaded-resume-id header) ──
+    const uploadedResumeId = request.headers.get("x-uploaded-resume-id");
+    if (uploadedResumeId) {
+      const adminDb       = getAdminDb();
+      const uploadedDoc   = await adminDb.collection("uploadedResumes").doc(uploadedResumeId).get();
+
+      if (uploadedDoc.exists && uploadedDoc.data()?.userId === uid) {
+        await adminDb.collection("uploadedResumes").doc(uploadedResumeId).update({
+          lastReviewScore: review.overallScore,
         });
       }
     }

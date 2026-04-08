@@ -41,6 +41,11 @@ export interface UserSubscription {
   transactionHistory: DodoTransaction[];
 }
 
+export interface UserCredits {
+  review:  number;
+  builder: number;
+}
+
 export interface UserProfile {
   uid:          string;
   email:        string;
@@ -48,6 +53,7 @@ export interface UserProfile {
   photoURL:     string | null;
   createdAt:    Timestamp;
   isPremium:    boolean;
+  credits:      UserCredits;
   subscription: UserSubscription;
   resumeIds:    string[];
 }
@@ -142,6 +148,20 @@ export interface ResumeData {
   lastReviewScore:    number | null;
 }
 
+// ─── Uploaded Resume ──────────────────────────────────────────
+// Represents a resume uploaded for review (PDF/DOCX),
+// stored in Firestore collection `uploadedResumes/{id}`
+
+export interface UploadedResume {
+  id:              string;        // Firestore doc ID
+  userId:          string;        // owner UID
+  fileName:        string;        // original file name
+  storagePath:     string;        // Firebase Storage path
+  fileType:        "pdf" | "docx";
+  uploadedAt:      Timestamp;
+  lastReviewScore: number | null;
+}
+
 // ─── AI ───────────────────────────────────────────────────────
 
 export type AIContentType =
@@ -201,23 +221,4 @@ export interface ApiResponse<T> {
   data?:  T;
   error?: string;
   code?:  number;
-}
-
-// Add this interface — place it right before UserProfile
-export interface UserCredits {
-  review:  number;
-  builder: number;
-}
-
-// Then update UserProfile to include credits
-export interface UserProfile {
-  uid:          string;
-  email:        string;
-  displayName:  string;
-  photoURL:     string | null;
-  createdAt:    Timestamp;
-  isPremium:    boolean;
-  credits:      UserCredits;        // ← this line is new
-  subscription: UserSubscription;
-  resumeIds:    string[];
 }

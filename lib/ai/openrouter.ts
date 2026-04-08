@@ -1,21 +1,22 @@
 // lib/ai/openrouter.ts
 // ============================================================
-// OPENROUTER AI CLIENT — StepFun Reasoning Model Compatible
-// WITH FIXES: generateFreePreview error handling + fallback
+// OPENROUTER AI CLIENT — Multi-model fallback + retry
 //
-// FIXES in this version:
-//  1. Force strict JSON output  — two-message (system+user) prompt
-//  2. Reduce response size      — compact schema, capped lengths
-//  3. Extract JSON safely       — hardened extractLastJsonBlock()
-//  4. Fallback parsing chain    — 5-stage pipeline
-//  5. MEMORY FIX                — removed JSON.stringify, capped sizes
-//  6. FREE PREVIEW FIX          — comprehensive logging + fallback generation
-//  7. TRUNCATION HANDLING       — graceful fallback on finish_reason='length'
+// Features:
+//  1. Model fallback chain  — tries free models in order
+//  2. Per-model retry       — up to 3 attempts with backoff on 429
+//  3. Force strict JSON     — two-message (system+user) prompt
+//  4. Compact schema        — capped response sizes
+//  5. Hardened JSON parsing — 5-stage extraction pipeline
+//  6. Truncation handling   — graceful repair on finish_reason='length'
+//  7. Free preview fallback — template-based degradation on any error
+//  8. Empty-content guard   — skips models that return reasoning but no JSON
 // ============================================================
 
 import type { ReviewSection, ReviewIssue } from "@/types";
 
 // ─── Types ────────────────────────────────────────────────────
+
 export interface ReviewResult {
   overallScore: number;
   sections:     ReviewSection[];
@@ -23,18 +24,105 @@ export interface ReviewResult {
 }
 
 // ─── Config ───────────────────────────────────────────────────
-const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions";
-const MODEL              = "stepfun/step-3.5-flash:free";
 
-// Max chars we store from any single AI text field — prevents multi-MB strings
+const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions";
+
+/**
+ * Model fallback chain — tried in order on 429 rate-limit or empty content.
+ *
+ * ⚠️  ORDER MATTERS:
+ * Non-reasoning models (Gemini, Llama, Mistral) are placed FIRST because
+ * they write JSON directly into `content`. Reasoning/thinking models
+ * (stepfun, nemotron) are placed LAST — they spend most of their token
+ * budget on internal chain-of-thought and frequently hit finish_reason='length'
+ * before ever emitting the JSON output, leaving `content` empty.
+ */
+const MODELS = [
+  "stepfun/step-3.5-flash:free",
+
+  "meta-llama/llama-4-maverick:free",
+  "qwen/qwen3-14b:free",
+  "mistralai/mistral-7b-instruct:free",
+  
+  "nvidia/nemotron-3-super-120b-a12b:free",
+];
+
+const MAX_RETRIES_PER_MODEL = 3;    // attempts per model before trying next
+const RETRY_BASE_DELAY_MS   = 1500; // delay × (attempt + 1) on each retry
+
+/** Max chars we store from any single AI text field — prevents multi-MB strings */
 const MAX_SOURCE_CHARS = 14_000;
 
-// ─── Prompt ───────────────────────────────────────────────────
-const SYSTEM_PROMPT = `You are a strict ATS resume scoring engine calibrated against real ATS systems (Taleo, Workday, Greenhouse, iCIMS).
+// ─── Shared fetch headers ─────────────────────────────────────
+
+function getHeaders(): Record<string, string> {
+  return {
+    "Content-Type":  "application/json",
+    "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
+    "HTTP-Referer":  process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000",
+    "X-Title":       "RESUFII Resume Reviewer",
+  };
+}
+
+// ─── Model fallback + retry fetch ────────────────────────────
+
+/**
+ * Tries each model in MODELS in order.
+ *
+ * Moves to the next model when:
+ *  - 429 after MAX_RETRIES_PER_MODEL attempts (rate-limited)
+ *  - Response is OK but content is empty (reasoning model burned all tokens
+ *    on chain-of-thought and never wrote the JSON — finish_reason='length')
+ *
+ * Returns { response, apiData } once a model produces non-empty content,
+ * or throws AI_SERVICE_ERROR:rate_limited after all models are exhausted.
+ */
+async function fetchWithFallback(
+  buildBody: (model: string) => object
+): Promise<Response> {
+  const headers = getHeaders();
+
+  for (const model of MODELS) {
+    for (let attempt = 0; attempt < MAX_RETRIES_PER_MODEL; attempt++) {
+      let res: Response;
+      try {
+        res = await fetch(OPENROUTER_API_URL, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(buildBody(model)),
+        });
+      } catch (netErr) {
+        throw new Error(`AI_SERVICE_ERROR:network:${(netErr as Error).message}`);
+      }
+
+      if (res.status !== 429) {
+        if (res.ok) console.log(`[OpenRouter] ✓ Model "${model}" responded OK`);
+        return res;
+      }
+
+      // 429 — decide whether to retry or move on
+      if (attempt < MAX_RETRIES_PER_MODEL - 1) {
+        const wait = RETRY_BASE_DELAY_MS * (attempt + 1);
+        console.warn(
+          `[OpenRouter] 429 on "${model}" — retry ${attempt + 1}/${MAX_RETRIES_PER_MODEL - 1} in ${wait}ms`
+        );
+        await new Promise(r => setTimeout(r, wait));
+      } else {
+        console.warn(`[OpenRouter] "${model}" exhausted all retries — trying next model`);
+      }
+    }
+  }
+
+  throw new Error("AI_SERVICE_ERROR:rate_limited");
+}
+
+// ─── Prompts ──────────────────────────────────────────────────
+
+const REVIEW_SYSTEM_PROMPT = `You are a strict ATS resume scoring engine calibrated against real ATS systems (Taleo, Workday, Greenhouse, iCIMS).
 Your ENTIRE response must be a single raw JSON object — no markdown, no prose, no code fences.
 Do NOT write anything before or after the JSON. Output only the JSON object.`;
 
-function buildUserPrompt(resumeText: string): string {
+function buildReviewUserPrompt(resumeText: string): string {
   return `Score this resume strictly against real ATS standards. Return ONLY the JSON below — no other text.
 
 ## SCORING RULES (read carefully before scoring)
@@ -85,14 +173,52 @@ RESUME:
 ${resumeText.slice(0, 6000)}`;
 }
 
+const CONTENT_SYSTEM_PROMPT = `You are an expert resume writer.
+Write professional, ATS-optimised resume content.
+Return ONLY the requested content — no preamble, no explanation, no markdown formatting.`;
+
+const SECTION_PROMPTS: Record<string, (ctx: Record<string, string>) => string> = {
+  experience: (ctx) => `Write 4-5 strong resume bullet points for this work experience.
+Each bullet must start with a past-tense action verb and include a quantified metric where possible.
+Role: ${ctx.role ?? "N/A"}
+Company: ${ctx.company ?? "N/A"}
+Duration: ${ctx.duration ?? "N/A"}
+Key responsibilities/context: ${ctx.description ?? "N/A"}
+Output ONLY the bullet points, one per line, starting each with "•".`,
+
+  summary: (ctx) => `Write a 2-3 sentence professional resume summary for a ${ctx.role ?? "professional"}
+with ${ctx.years ?? "several"} years of experience in ${ctx.industry ?? "their field"}.
+Key skills: ${ctx.skills ?? "N/A"}
+Target role: ${ctx.targetRole ?? ctx.role ?? "N/A"}
+Output ONLY the summary paragraph.`,
+
+  skills: (ctx) => `Generate a concise, ATS-friendly skills section for a ${ctx.role ?? "professional"}.
+Industry: ${ctx.industry ?? "N/A"}
+Experience level: ${ctx.level ?? "mid-level"}
+Existing skills mentioned: ${ctx.existing ?? "N/A"}
+Output ONLY a comma-separated list of relevant hard and soft skills.`,
+
+  education: (ctx) => `Write a clean resume education entry for:
+Degree: ${ctx.degree ?? "N/A"}
+Institution: ${ctx.institution ?? "N/A"}
+Year: ${ctx.year ?? "N/A"}
+Relevant coursework/achievements: ${ctx.details ?? "N/A"}
+Output ONLY the formatted education entry (2-3 lines max).`,
+
+  project: (ctx) => `Write 2-3 resume bullet points for this project:
+Project name: ${ctx.name ?? "N/A"}
+Tech stack: ${ctx.stack ?? "N/A"}
+Description: ${ctx.description ?? "N/A"}
+Impact/outcome: ${ctx.impact ?? "N/A"}
+Output ONLY the bullet points, one per line, starting each with "•".`,
+};
+
 // ─── JSON extraction helpers ──────────────────────────────────
 
 /**
  * Hardened brace-balanced scanner.
- * - Handles \\uXXXX unicode escape sequences.
- * - Tracks inString correctly across multi-line strings.
- * - Returns LAST complete block (reasoning models write JSON at end).
- * - Falls back to attempting repair on an unclosed trailing block.
+ * Returns the LAST complete JSON block (reasoning models write JSON at end).
+ * Falls back to attempting repair on an unclosed trailing block.
  */
 function extractLastJsonBlock(text: string): string | null {
   let lastBlock: string | null = null;
@@ -112,11 +238,7 @@ function extractLastJsonBlock(text: string): string | null {
 
       if (inString) {
         if (ch === "\\") {
-          if (text[j + 1] === "u") {
-            j += 5;
-          } else {
-            j += 2;
-          }
+          j += text[j + 1] === "u" ? 6 : 2;
           continue;
         }
         if (ch === '"') inString = false;
@@ -124,9 +246,9 @@ function extractLastJsonBlock(text: string): string | null {
         continue;
       }
 
-      if (ch === '"') { inString = true; j++; continue; }
-      if (ch === "{") { depth++; j++; continue; }
-      if (ch === "}") {
+      if      (ch === '"') { inString = true; j++; continue; }
+      else if (ch === "{") { depth++; j++; continue; }
+      else if (ch === "}") {
         depth--;
         if (depth === 0) { closed = true; break; }
         j++;
@@ -158,25 +280,23 @@ function stripFences(text: string): string {
 
 /**
  * Close unclosed braces/brackets left by token-limit truncation.
- * Handles nested structures and removes trailing commas.
  */
 function repairTruncatedJson(raw: string): string {
   let s        = raw.trimEnd().replace(/,\s*$/, "");
   const opens: string[] = [];
   let inString = false;
+  let k        = 0;
 
-  let k = 0;
   while (k < s.length) {
     const ch = s[k];
     if (inString) {
       if (ch === "\\") { k += 2; continue; }
       if (ch === '"')  inString = false;
-      k++;
-      continue;
+      k++; continue;
     }
-    if (ch === '"')                    { inString = true; }
-    else if (ch === "{" || ch === "[") opens.push(ch);
-    else if (ch === "}" || ch === "]") opens.pop();
+    if      (ch === '"')                    inString = true;
+    else if (ch === "{" || ch === "[")      opens.push(ch);
+    else if (ch === "}" || ch === "]")      opens.pop();
     k++;
   }
 
@@ -191,20 +311,21 @@ function repairTruncatedJson(raw: string): string {
  * 5-stage fallback parsing pipeline.
  */
 function extractAndParse(text: string): ReviewResult {
+  // Stage 1: direct parse
   try { return JSON.parse(text) as ReviewResult; } catch { /* next */ }
 
+  // Stage 2: strip fences then parse
   const stripped = stripFences(text);
   try { return JSON.parse(stripped) as ReviewResult; } catch { /* next */ }
 
+  // Stage 3: brace-balanced extraction
   const lastBlock = extractLastJsonBlock(text);
   if (lastBlock) {
     try { return JSON.parse(lastBlock) as ReviewResult; } catch { /* next */ }
-
-    try {
-      return JSON.parse(repairTruncatedJson(lastBlock)) as ReviewResult;
-    } catch { /* next */ }
+    try { return JSON.parse(repairTruncatedJson(lastBlock)) as ReviewResult; } catch { /* next */ }
   }
 
+  // Stage 5: regex candidate search
   const searchText  = text.slice(0, 20_000);
   const jsonPattern = /\{[^{}]{0,8000}"overallScore"[\s\S]{0,8000}\}/g;
   const candidates  = [...searchText.matchAll(jsonPattern)]
@@ -216,7 +337,7 @@ function extractAndParse(text: string): ReviewResult {
     try { return JSON.parse(repairTruncatedJson(candidate)) as ReviewResult; } catch { /* next */ }
   }
 
-  console.error("[OpenRouter] All 5 parse stages failed.", {
+  console.error("[OpenRouter] All parse stages failed.", {
     textLength: text.length,
     tail: text.slice(-600),
   });
@@ -242,9 +363,9 @@ function validateResult(raw: unknown): ReviewResult {
   r.sections = r.sections
     .filter(s => s && typeof s === "object")
     .map(s => ({
-      category:  VALID_CATEGORIES.has(s.category) ? s.category : "ats_compatibility",
-      label:     String(s.label ?? s.category ?? "").slice(0, 40),
-      score:     Math.min(100, Math.max(0, Math.round(Number(s.score) || 0))),
+      category: VALID_CATEGORIES.has(s.category) ? s.category : "ats_compatibility",
+      label:    String(s.label ?? s.category ?? "").slice(0, 40),
+      score:    Math.min(100, Math.max(0, Math.round(Number(s.score) || 0))),
       issues: Array.isArray(s.issues)
         ? s.issues
             .filter(i => i && typeof i === "object")
@@ -278,79 +399,56 @@ function validateResult(raw: unknown): ReviewResult {
   return r;
 }
 
-// ─── Main export ──────────────────────────────────────────────
+// ─── Response parsing helper ──────────────────────────────────
 
-export async function reviewResume(resumeText: string): Promise<ReviewResult> {
-  console.log(`[OpenRouter] Starting review | model: ${MODEL} | resume: ${resumeText.length} chars`);
+/**
+ * Checks whether the API response has any usable text content.
+ * Returns false when a reasoning model burned all its tokens on
+ * chain-of-thought and left `content` empty (finish_reason='length').
+ * In that case the caller should skip to the next model.
+ */
+function hasUsableContent(apiData: {
+  choices?: Array<{
+    finish_reason?: string;
+    message?: {
+      content?:           string | null;
+      reasoning?:         string | null;
+      reasoning_details?: Array<{ type: string; text?: string }>;
+    };
+  }>;
+}): boolean {
+  const message = apiData.choices?.[0]?.message;
+  if (!message) return false;
 
-  let response: Response;
-  try {
-    response = await fetch(OPENROUTER_API_URL, {
-      method:  "POST",
-      headers: {
-        "Content-Type":  "application/json",
-        "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
-        "HTTP-Referer":  process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000",
-        "X-Title":       "RESUFII Resume Reviewer",
-      },
-      body: JSON.stringify({
-        model:      MODEL,
-        max_tokens: 8000,
-        temperature: 0.0,
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user",   content: buildUserPrompt(resumeText) },
-        ],
-      }),
-    });
-  } catch (netErr) {
-    const msg = (netErr as Error).message;
-    console.error("[OpenRouter] Network error:", msg);
-    throw new Error(`AI_SERVICE_ERROR:network:${msg}`);
-  }
+  const hasContent         = !!message.content?.trim();
+  const hasReasoning       = !!message.reasoning?.trim();
+  const hasReasoningDetail = Array.isArray(message.reasoning_details) &&
+    message.reasoning_details.some(d => d.type === "reasoning.text" && d.text?.trim());
 
-  if (!response.ok) {
-    const body = await response.text().catch(() => "");
-    console.error(`[OpenRouter] HTTP ${response.status}:`, body.slice(0, 300));
-    if (response.status === 429) throw new Error("AI_SERVICE_ERROR:rate_limited");
-    if (response.status >= 500) throw new Error(`AI_SERVICE_ERROR:upstream_${response.status}`);
-    throw new Error(`AI_SERVICE_ERROR:${response.status}`);
-  }
+  return hasContent || hasReasoning || hasReasoningDetail;
+}
 
-  let apiData: {
-    choices?: Array<{
-      finish_reason?: string;
-      message?: {
-        content?:           string | null;
-        reasoning?:         string | null;
-        reasoning_details?: Array<{ type: string; text?: string }>;
-      };
-    }>;
-  };
-
-  try {
-    apiData = await response.json();
-  } catch {
-    throw new Error("AI_SERVICE_ERROR:bad_api_response");
-  }
-
-  console.log("[OpenRouter] API response received:", {
-    finish_reason:   apiData.choices?.[0]?.finish_reason,
-    contentLength:   apiData.choices?.[0]?.message?.content?.length   ?? 0,
-    reasoningLength: apiData.choices?.[0]?.message?.reasoning?.length ?? 0,
-  });
-
+function parseReviewResponse(apiData: {
+  choices?: Array<{
+    finish_reason?: string;
+    message?: {
+      content?:           string | null;
+      reasoning?:         string | null;
+      reasoning_details?: Array<{ type: string; text?: string }>;
+    };
+  }>;
+}): ReviewResult {
   const choice  = apiData.choices?.[0];
   const message = choice?.message;
   if (!message) throw new Error("AI_SERVICE_ERROR:no_message");
 
-  const finishReason = choice?.finish_reason;
-  if (finishReason === "length") {
-    console.warn("[OpenRouter] finish_reason=length — output was truncated. Will attempt JSON repair.");
+  if (choice?.finish_reason === "length") {
+    console.warn("[OpenRouter] finish_reason=length — output was truncated, attempting JSON repair.");
   }
 
   const sources: Array<{ label: string; text: string }> = [];
 
+  // Always try `content` first — it's where non-reasoning models put the JSON.
   if (message.content?.trim()) {
     sources.push({ label: "content", text: message.content.trim().slice(0, MAX_SOURCE_CHARS) });
   }
@@ -366,74 +464,140 @@ export async function reviewResume(resumeText: string): Promise<ReviewResult> {
     if (combined) sources.push({ label: "reasoning_details", text: combined });
   }
 
-  // @ts-expect-error — intentional early release of large object
-  apiData = null;
-
   if (sources.length === 0) {
-    console.error(`[OpenRouter] No text in any field. finish_reason: ${finishReason ?? "unknown"}`);
-    throw new Error(`AI_SERVICE_ERROR:no_content:${finishReason ?? "unknown"}`);
+    throw new Error(`AI_SERVICE_ERROR:no_content:${choice?.finish_reason ?? "unknown"}`);
   }
 
   for (const { label, text } of sources) {
     console.log(`[OpenRouter] Trying source "${label}" (${text.length} chars)…`);
     try {
       const result = validateResult(extractAndParse(text));
-      console.log(`[OpenRouter] ✓ Review complete via "${label}". Score: ${result.overallScore}`);
+      console.log(`[OpenRouter] ✓ Parsed via "${label}". Score: ${result.overallScore}`);
       return result;
     } catch (err) {
       console.warn(`[OpenRouter] Source "${label}" failed:`, (err as Error).message);
     }
   }
 
+  // Last resort: combine all sources
   const allText = sources.map(s => s.text).join("\n\n");
-  console.log(`[OpenRouter] Trying combined text (${allText.length} chars)…`);
+  console.log(`[OpenRouter] Trying combined sources (${allText.length} chars)…`);
   const result = validateResult(extractAndParse(allText));
-  console.log(`[OpenRouter] ✓ Review complete via combined text. Score: ${result.overallScore}`);
+  console.log(`[OpenRouter] ✓ Parsed via combined sources. Score: ${result.overallScore}`);
   return result;
 }
 
+// ─── Exported functions ───────────────────────────────────────
 
-// ─── Content Generation ───────────────────────────────────────
+/**
+ * Full ATS resume review. Returns a ReviewResult.
+ *
+ * Uses model fallback chain + per-model retry on 429.
+ * Also falls through to the next model when a response is OK but contains
+ * no usable content (reasoning model hit token limit mid-think).
+ */
+export async function reviewResume(resumeText: string): Promise<ReviewResult> {
+  console.log(`[OpenRouter] Starting review | resume: ${resumeText.length} chars`);
 
-const CONTENT_SYSTEM_PROMPT = `You are an expert resume writer. 
-Write professional, ATS-optimised resume content.
-Return ONLY the requested content — no preamble, no explanation, no markdown formatting.`;
+  const headers = getHeaders();
 
-const SECTION_PROMPTS: Record<string, (ctx: Record<string, string>) => string> = {
-  experience: (ctx) => `Write 4-5 strong resume bullet points for this work experience.
-Each bullet must start with a past-tense action verb and include a quantified metric where possible.
-Role: ${ctx.role ?? "N/A"}
-Company: ${ctx.company ?? "N/A"}
-Duration: ${ctx.duration ?? "N/A"}
-Key responsibilities/context: ${ctx.description ?? "N/A"}
-Output ONLY the bullet points, one per line, starting each with "•".`,
+  // We need per-model loop control here (to skip on empty content),
+  // so we inline the fetch loop rather than using fetchWithFallback.
+  for (const model of MODELS) {
+    for (let attempt = 0; attempt < MAX_RETRIES_PER_MODEL; attempt++) {
+      let res: Response;
+      try {
+        res = await fetch(OPENROUTER_API_URL, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            model,
+            // 16 000 gives reasoning models enough budget to finish the JSON
+            // after their chain-of-thought. Non-reasoning models don't use it.
+            max_tokens:  16_000,
+            temperature: 0.0,
+            messages: [
+              { role: "system", content: REVIEW_SYSTEM_PROMPT },
+              { role: "user",   content: buildReviewUserPrompt(resumeText) },
+            ],
+          }),
+        });
+      } catch (netErr) {
+        throw new Error(`AI_SERVICE_ERROR:network:${(netErr as Error).message}`);
+      }
 
-  summary: (ctx) => `Write a 2-3 sentence professional resume summary for a ${ctx.role ?? "professional"} 
-with ${ctx.years ?? "several"} years of experience in ${ctx.industry ?? "their field"}.
-Key skills: ${ctx.skills ?? "N/A"}
-Target role: ${ctx.targetRole ?? ctx.role ?? "N/A"}
-Output ONLY the summary paragraph.`,
+      // Rate limited — retry with backoff or skip to next model
+      if (res.status === 429) {
+        if (attempt < MAX_RETRIES_PER_MODEL - 1) {
+          const wait = RETRY_BASE_DELAY_MS * (attempt + 1);
+          console.warn(`[OpenRouter] 429 on "${model}" — retry ${attempt + 1}/${MAX_RETRIES_PER_MODEL - 1} in ${wait}ms`);
+          await new Promise(r => setTimeout(r, wait));
+          continue;
+        }
+        console.warn(`[OpenRouter] "${model}" exhausted all retries — trying next model`);
+        break; // next model
+      }
 
-  skills: (ctx) => `Generate a concise, ATS-friendly skills section for a ${ctx.role ?? "professional"}.
-Industry: ${ctx.industry ?? "N/A"}
-Experience level: ${ctx.level ?? "mid-level"}
-Existing skills mentioned: ${ctx.existing ?? "N/A"}
-Output ONLY a comma-separated list of relevant hard and soft skills.`,
+      // Non-OK, non-429 — surface the error immediately
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        console.error(`[OpenRouter] HTTP ${res.status}:`, body.slice(0, 300));
+        if (res.status >= 500) throw new Error(`AI_SERVICE_ERROR:upstream_${res.status}`);
+        throw new Error(`AI_SERVICE_ERROR:${res.status}`);
+      }
 
-  education: (ctx) => `Write a clean resume education entry for:
-Degree: ${ctx.degree ?? "N/A"}
-Institution: ${ctx.institution ?? "N/A"}
-Year: ${ctx.year ?? "N/A"}
-Relevant coursework/achievements: ${ctx.details ?? "N/A"}
-Output ONLY the formatted education entry (2-3 lines max).`,
+      let apiData: {
+        choices?: Array<{
+          finish_reason?: string;
+          message?: {
+            content?:           string | null;
+            reasoning?:         string | null;
+            reasoning_details?: Array<{ type: string; text?: string }>;
+          };
+        }>;
+      };
 
-  project: (ctx) => `Write 2-3 resume bullet points for this project:
-Project name: ${ctx.name ?? "N/A"}
-Tech stack: ${ctx.stack ?? "N/A"}
-Description: ${ctx.description ?? "N/A"}
-Impact/outcome: ${ctx.impact ?? "N/A"}
-Output ONLY the bullet points, one per line, starting each with "•".`,
-};
+      try {
+        apiData = await res.json();
+      } catch {
+        throw new Error("AI_SERVICE_ERROR:bad_api_response");
+      }
+
+      const finishReason   = apiData.choices?.[0]?.finish_reason;
+      const contentLength  = apiData.choices?.[0]?.message?.content?.length   ?? 0;
+      const reasoningLength = apiData.choices?.[0]?.message?.reasoning?.length ?? 0;
+
+      console.log(`[OpenRouter] "${model}" response:`, { finishReason, contentLength, reasoningLength });
+
+      // ── Key fix: skip reasoning-only responses with no JSON ──────────────
+      // When a reasoning model returns content="" but has reasoning text,
+      // it means it ran out of tokens before writing the JSON output.
+      // Skip immediately to the next model instead of trying to parse thinking.
+      if (!apiData.choices?.[0]?.message?.content?.trim() && finishReason === "length") {
+        console.warn(
+          `[OpenRouter] "${model}" has empty content with finish_reason=length ` +
+          `(reasoning-only truncation). Skipping to next model.`
+        );
+        break; // next model
+      }
+
+      if (!hasUsableContent(apiData)) {
+        console.warn(`[OpenRouter] "${model}" returned no usable content — skipping.`);
+        break; // next model
+      }
+
+      console.log(`[OpenRouter] ✓ Model "${model}" responded OK`);
+      const result = parseReviewResponse(apiData);
+
+      // @ts-expect-error — intentional early GC of large object
+      apiData = null;
+
+      return result;
+    }
+  }
+
+  throw new Error("AI_SERVICE_ERROR:rate_limited");
+}
 
 /**
  * Generate full resume section content for premium users.
@@ -446,24 +610,15 @@ export async function generateResumeContent(
   const promptFn   = SECTION_PROMPTS[type] ?? SECTION_PROMPTS["experience"];
   const userPrompt = promptFn(context);
 
-  const response = await fetch(OPENROUTER_API_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type":  "application/json",
-      "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
-      "HTTP-Referer":  process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000",
-      "X-Title":       "RESUFII Resume Writer",
-    },
-    body: JSON.stringify({
-      model:       MODEL,
-      max_tokens:  600,
-      temperature: 0.7,
-      messages: [
-        { role: "system", content: CONTENT_SYSTEM_PROMPT },
-        { role: "user",   content: userPrompt },
-      ],
-    }),
-  });
+  const response = await fetchWithFallback((model) => ({
+    model,
+    max_tokens:  600,
+    temperature: 0.7,
+    messages: [
+      { role: "system", content: CONTENT_SYSTEM_PROMPT },
+      { role: "user",   content: userPrompt },
+    ],
+  }));
 
   if (!response.ok) {
     const body = await response.text().catch(() => "");
@@ -474,145 +629,110 @@ export async function generateResumeContent(
   }
 
   const data = await response.json() as {
-    usage?: { total_tokens?: number };
+    usage?:   { total_tokens?: number };
     choices?: Array<{ message?: { content?: string | null } }>;
   };
 
   const content = data.choices?.[0]?.message?.content?.trim();
   if (!content) throw new Error("AI_SERVICE_ERROR:no_content");
 
-  const tokens = data.usage?.total_tokens ?? 0;
-  return { content, tokens };
+  return { content, tokens: data.usage?.total_tokens ?? 0 };
 }
 
 /**
  * Generate a single free preview bullet point for non-premium users.
- * Returns a plain string (one bullet).
- * 
- * IMPROVEMENTS:
- * - Comprehensive logging to diagnose failures
- * - Validates each step of response parsing
- * - Graceful fallback to template on any error or truncation
- * - Handles finish_reason='length' without throwing
+ * Returns a plain string. Never throws — falls back to a template on any error.
  */
 export async function generateFreePreview(
   role: string,
   company: string
 ): Promise<string> {
-  console.log(`[OpenRouter/preview] Starting preview | role: ${role} | company: ${company}`);
+  console.log(`[OpenRouter/preview] Starting | role: ${role} | company: ${company}`);
 
   try {
-    const response = await fetch(OPENROUTER_API_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type":  "application/json",
-        "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
-        "HTTP-Referer":  process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000",
-        "X-Title":       "RESUFII Resume Writer",
-      },
-      body: JSON.stringify({
-        model:       MODEL,
-        max_tokens:  200,
-        temperature: 0.7,
-        messages: [
-          { role: "system", content: CONTENT_SYSTEM_PROMPT },
-          {
-            role: "user",
-            content: `Write ONE resume bullet for a ${role} at ${company}. Start with a verb. Include a metric.
-Return ONLY the bullet text.`,
-          },
-        ],
-      }),
-    });
+    const response = await fetchWithFallback((model) => ({
+      model,
+      max_tokens:  200,
+      temperature: 0.7,
+      messages: [
+        { role: "system", content: CONTENT_SYSTEM_PROMPT },
+        {
+          role:    "user",
+          content: `Write ONE resume bullet for a ${role} at ${company}. Start with a verb. Include a metric.\nReturn ONLY the bullet text.`,
+        },
+      ],
+    }));
 
     if (!response.ok) {
       const body = await response.text().catch(() => "");
       console.error(`[OpenRouter/preview] HTTP ${response.status}:`, body.slice(0, 300));
-      console.log(`[OpenRouter/preview] Falling back to template for role: ${role}`);
       return generateFallbackPreview(role, company);
     }
 
     let data: {
-      choices?: Array<{ 
+      choices?: Array<{
         finish_reason?: string;
-        message?: { content?: string | null } 
+        message?:       { content?: string | null };
       }>;
       error?: { message?: string };
     };
 
     try {
       data = await response.json();
-    } catch (parseErr) {
-      console.error(`[OpenRouter/preview] Failed to parse JSON response:`, (parseErr as Error).message);
-      console.log(`[OpenRouter/preview] Falling back to template for role: ${role}`);
+    } catch {
+      console.error("[OpenRouter/preview] Failed to parse JSON response");
       return generateFallbackPreview(role, company);
     }
 
-    // Log the actual response structure for debugging
-    console.log(`[OpenRouter/preview] Response structure:`, {
-      hasChoices: !!data.choices,
-      choicesLength: data.choices?.length ?? 0,
-      finishReason: data.choices?.[0]?.finish_reason,
+    console.log("[OpenRouter/preview] Response:", {
+      finishReason:  data.choices?.[0]?.finish_reason,
       contentLength: data.choices?.[0]?.message?.content?.length ?? 0,
     });
 
-    // Check for API-level errors
     if (data.error) {
-      console.error(`[OpenRouter/preview] API error:`, data.error.message);
-      console.log(`[OpenRouter/preview] Falling back to template for role: ${role}`);
+      console.error("[OpenRouter/preview] API error:", data.error.message);
       return generateFallbackPreview(role, company);
     }
 
-    // Validate choices array and extract content
-    const choice = data.choices?.[0];
-    if (!choice?.message) {
-      console.error(`[OpenRouter/preview] Invalid response structure`);
-      console.log(`[OpenRouter/preview] Falling back to template for role: ${role}`);
-      return generateFallbackPreview(role, company);
-    }
-
-    const content = choice.message.content?.trim();
+    const content = data.choices?.[0]?.message?.content?.trim();
     if (!content) {
-      console.warn(`[OpenRouter/preview] Empty content field. finish_reason: ${choice.finish_reason ?? "unknown"}`);
-      console.log(`[OpenRouter/preview] Falling back to template for role: ${role}`);
+      console.warn(`[OpenRouter/preview] Empty content. finish_reason: ${data.choices?.[0]?.finish_reason ?? "unknown"}`);
       return generateFallbackPreview(role, company);
     }
 
-    console.log(`[OpenRouter/preview] ✓ Preview generated (${content.length} chars)`);
+    console.log(`[OpenRouter/preview] ✓ Generated (${content.length} chars)`);
     return content;
+
   } catch (err) {
-    console.error(`[OpenRouter/preview] Unexpected error:`, (err as Error).message);
-    console.log(`[OpenRouter/preview] Falling back to template for role: ${role}`);
+    console.error("[OpenRouter/preview] Unexpected error:", (err as Error).message);
     return generateFallbackPreview(role, company);
   }
 }
 
 /**
- * Fallback template-based bullet generator.
- * Used if AI generation fails to provide a graceful degradation.
+ * Template-based fallback bullet generator.
+ * Used when AI generation fails — ensures graceful degradation.
  */
 export function generateFallbackPreview(role: string, company: string): string {
   const templates: Record<string, string> = {
-    engineer: `• Developed and deployed scalable systems impacting 10K+ end users`,
-    "software engineer": `• Built full-stack features improving system performance by 25%+`,
-    "senior engineer": `• Architected microservices reducing latency by 40% for 50K+ users`,
-    "product manager": `• Led cross-functional team delivering product roadmap ahead of schedule`,
-    manager: `• Managed team of 5+ professionals, achieving 120% of quarterly OKRs`,
-    designer: `• Designed user-centric interfaces increasing engagement by 35%`,
-    analyst: `• Analyzed large datasets to identify trends, resulting in $500K savings`,
-    "data scientist": `• Built ML models improving prediction accuracy from 75% to 92%`,
+    "engineer":          "• Developed and deployed scalable systems impacting 10K+ end users",
+    "software engineer": "• Built full-stack features improving system performance by 25%+",
+    "senior engineer":   "• Architected microservices reducing latency by 40% for 50K+ users",
+    "product manager":   "• Led cross-functional team delivering product roadmap ahead of schedule",
+    "manager":           "• Managed team of 5+ professionals, achieving 120% of quarterly OKRs",
+    "designer":          "• Designed user-centric interfaces increasing engagement by 35%",
+    "analyst":           "• Analysed large datasets to identify trends, resulting in $500K savings",
+    "data scientist":    "• Built ML models improving prediction accuracy from 75% to 92%",
   };
 
-  // Try exact match first, then fuzzy match on first word
-  let template: string | undefined = templates[role.toLowerCase()];
-  if (!template) {
-    const firstWord = role.toLowerCase().split(" ")[0];
-    const match = Object.entries(templates).find(([k]) => k.startsWith(firstWord));
-    template = match?.[1];
-  }
+  const key      = role.toLowerCase();
+  const firstWord = key.split(" ")[0];
 
-  // Fallback to generic if no match
-  const result: string = template || `• Delivered measurable results at ${company}`;
-  console.log(`[OpenRouter/preview] Using fallback template:`, result);
-  return result;
+  const template =
+    templates[key] ??
+    Object.entries(templates).find(([k]) => k.startsWith(firstWord))?.[1] ??
+    `• Delivered measurable results at ${company}`;
+
+  console.log("[OpenRouter/preview] Using fallback template:", template);
+  return template;
 }
