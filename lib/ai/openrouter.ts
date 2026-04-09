@@ -11,6 +11,7 @@
 //  6. Truncation handling   — graceful repair on finish_reason='length'
 //  7. Free preview fallback — template-based degradation on any error
 //  8. Empty-content guard   — skips models that return reasoning but no JSON
+//  9. 404 guard             — skips deprecated/unavailable models
 // ============================================================
 
 import type { ReviewSection, ReviewIssue } from "@/types";
@@ -28,23 +29,20 @@ export interface ReviewResult {
 const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions";
 
 /**
- * Model fallback chain — tried in order on 429 rate-limit or empty content.
+ * Model fallback chain — tried in order on 429/404 or empty content.
  *
- * ⚠️  ORDER MATTERS:
- * Non-reasoning models (Gemini, Llama, Mistral) are placed FIRST because
- * they write JSON directly into `content`. Reasoning/thinking models
- * (stepfun, nemotron) are placed LAST — they spend most of their token
- * budget on internal chain-of-thought and frequently hit finish_reason='length'
- * before ever emitting the JSON output, leaving `content` empty.
+ * "openrouter/free" is placed first — it auto-selects the best available
+ * free model, so it's immune to individual model deprecations.
+ * Explicit models follow as deterministic fallbacks.
  */
 const MODELS = [
-  "stepfun/step-3.5-flash:free",
-
-  "meta-llama/llama-4-maverick:free",
-  "qwen/qwen3-14b:free",
-  "mistralai/mistral-7b-instruct:free",
-  
-  "nvidia/nemotron-3-super-120b-a12b:free",
+  "openrouter/free",  // auto-selects best free model
+  "qwen/qwen3.6-plus",
+  "stepfun/step-3.5-flash",                    
+  "meta-llama/llama-3.3-70b-instruct:free",        // strong, reliable
+  "qwen/qwen3-14b:free",                           // good instruction following
+  "mistralai/mistral-small-3.1-24b-instruct:free", // solid fallback
+  "nvidia/llama-3.1-nemotron-70b-instruct:free",   // long context fallback
 ];
 
 const MAX_RETRIES_PER_MODEL = 3;    // attempts per model before trying next
@@ -71,10 +69,10 @@ function getHeaders(): Record<string, string> {
  *
  * Moves to the next model when:
  *  - 429 after MAX_RETRIES_PER_MODEL attempts (rate-limited)
- *  - Response is OK but content is empty (reasoning model burned all tokens
- *    on chain-of-thought and never wrote the JSON — finish_reason='length')
+ *  - 404 — model deprecated/unavailable
+ *  - Response is OK but content is empty (reasoning model burned all tokens)
  *
- * Returns { response, apiData } once a model produces non-empty content,
+ * Returns Response once a model produces a non-error response,
  * or throws AI_SERVICE_ERROR:rate_limited after all models are exhausted.
  */
 async function fetchWithFallback(
@@ -93,6 +91,13 @@ async function fetchWithFallback(
         });
       } catch (netErr) {
         throw new Error(`AI_SERVICE_ERROR:network:${(netErr as Error).message}`);
+      }
+
+      // 404 — model deprecated or unavailable, skip immediately
+      if (res.status === 404) {
+        const body = await res.text().catch(() => "");
+        console.warn(`[OpenRouter] "${model}" returned 404 (deprecated/unavailable) — skipping.`, body.slice(0, 200));
+        break; // next model
       }
 
       if (res.status !== 429) {
@@ -403,9 +408,6 @@ function validateResult(raw: unknown): ReviewResult {
 
 /**
  * Checks whether the API response has any usable text content.
- * Returns false when a reasoning model burned all its tokens on
- * chain-of-thought and left `content` empty (finish_reason='length').
- * In that case the caller should skip to the next model.
  */
 function hasUsableContent(apiData: {
   choices?: Array<{
@@ -448,7 +450,6 @@ function parseReviewResponse(apiData: {
 
   const sources: Array<{ label: string; text: string }> = [];
 
-  // Always try `content` first — it's where non-reasoning models put the JSON.
   if (message.content?.trim()) {
     sources.push({ label: "content", text: message.content.trim().slice(0, MAX_SOURCE_CHARS) });
   }
@@ -479,7 +480,6 @@ function parseReviewResponse(apiData: {
     }
   }
 
-  // Last resort: combine all sources
   const allText = sources.map(s => s.text).join("\n\n");
   console.log(`[OpenRouter] Trying combined sources (${allText.length} chars)…`);
   const result = validateResult(extractAndParse(allText));
@@ -491,18 +491,12 @@ function parseReviewResponse(apiData: {
 
 /**
  * Full ATS resume review. Returns a ReviewResult.
- *
- * Uses model fallback chain + per-model retry on 429.
- * Also falls through to the next model when a response is OK but contains
- * no usable content (reasoning model hit token limit mid-think).
  */
 export async function reviewResume(resumeText: string): Promise<ReviewResult> {
   console.log(`[OpenRouter] Starting review | resume: ${resumeText.length} chars`);
 
   const headers = getHeaders();
 
-  // We need per-model loop control here (to skip on empty content),
-  // so we inline the fetch loop rather than using fetchWithFallback.
   for (const model of MODELS) {
     for (let attempt = 0; attempt < MAX_RETRIES_PER_MODEL; attempt++) {
       let res: Response;
@@ -512,8 +506,6 @@ export async function reviewResume(resumeText: string): Promise<ReviewResult> {
           headers,
           body: JSON.stringify({
             model,
-            // 16 000 gives reasoning models enough budget to finish the JSON
-            // after their chain-of-thought. Non-reasoning models don't use it.
             max_tokens:  16_000,
             temperature: 0.0,
             messages: [
@@ -526,7 +518,14 @@ export async function reviewResume(resumeText: string): Promise<ReviewResult> {
         throw new Error(`AI_SERVICE_ERROR:network:${(netErr as Error).message}`);
       }
 
-      // Rate limited — retry with backoff or skip to next model
+      // 404 — model deprecated, skip immediately
+      if (res.status === 404) {
+        const body = await res.text().catch(() => "");
+        console.warn(`[OpenRouter] "${model}" returned 404 (deprecated/unavailable) — skipping.`, body.slice(0, 200));
+        break; // next model
+      }
+
+      // 429 — rate limited, retry with backoff or skip
       if (res.status === 429) {
         if (attempt < MAX_RETRIES_PER_MODEL - 1) {
           const wait = RETRY_BASE_DELAY_MS * (attempt + 1);
@@ -538,10 +537,10 @@ export async function reviewResume(resumeText: string): Promise<ReviewResult> {
         break; // next model
       }
 
-      // Non-OK, non-429 — surface the error immediately
+      // Other non-OK errors — surface immediately
       if (!res.ok) {
         const body = await res.text().catch(() => "");
-        console.error(`[OpenRouter] HTTP ${res.status}:`, body.slice(0, 300));
+        console.error(`[OpenRouter] HTTP ${res.status} on "${model}":`, body.slice(0, 300));
         if (res.status >= 500) throw new Error(`AI_SERVICE_ERROR:upstream_${res.status}`);
         throw new Error(`AI_SERVICE_ERROR:${res.status}`);
       }
@@ -563,16 +562,13 @@ export async function reviewResume(resumeText: string): Promise<ReviewResult> {
         throw new Error("AI_SERVICE_ERROR:bad_api_response");
       }
 
-      const finishReason   = apiData.choices?.[0]?.finish_reason;
-      const contentLength  = apiData.choices?.[0]?.message?.content?.length   ?? 0;
+      const finishReason    = apiData.choices?.[0]?.finish_reason;
+      const contentLength   = apiData.choices?.[0]?.message?.content?.length   ?? 0;
       const reasoningLength = apiData.choices?.[0]?.message?.reasoning?.length ?? 0;
 
       console.log(`[OpenRouter] "${model}" response:`, { finishReason, contentLength, reasoningLength });
 
-      // ── Key fix: skip reasoning-only responses with no JSON ──────────────
-      // When a reasoning model returns content="" but has reasoning text,
-      // it means it ran out of tokens before writing the JSON output.
-      // Skip immediately to the next model instead of trying to parse thinking.
+      // Skip reasoning-only responses with no JSON content
       if (!apiData.choices?.[0]?.message?.content?.trim() && finishReason === "length") {
         console.warn(
           `[OpenRouter] "${model}" has empty content with finish_reason=length ` +
@@ -601,7 +597,6 @@ export async function reviewResume(resumeText: string): Promise<ReviewResult> {
 
 /**
  * Generate full resume section content for premium users.
- * Returns { content: string, tokens: number }.
  */
 export async function generateResumeContent(
   type: string,
@@ -641,7 +636,7 @@ export async function generateResumeContent(
 
 /**
  * Generate a single free preview bullet point for non-premium users.
- * Returns a plain string. Never throws — falls back to a template on any error.
+ * Never throws — falls back to a template on any error.
  */
 export async function generateFreePreview(
   role: string,
@@ -725,7 +720,7 @@ export function generateFallbackPreview(role: string, company: string): string {
     "data scientist":    "• Built ML models improving prediction accuracy from 75% to 92%",
   };
 
-  const key      = role.toLowerCase();
+  const key       = role.toLowerCase();
   const firstWord = key.split(" ")[0];
 
   const template =

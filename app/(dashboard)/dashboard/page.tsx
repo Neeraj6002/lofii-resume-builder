@@ -51,41 +51,112 @@ function templateLabel(t: string): string {
   return map[t] ?? t;
 }
 
-// ─── PDF text extraction ──────────────────────────────────────
+// ─── Resume data → plain text converter ──────────────────────
+// Used so "Built with ResuMAI" cards can be reviewed without re-uploading a file
 
-async function extractPDF(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = async (e) => {
-      try {
-        const typedArray = new Uint8Array(e.target?.result as ArrayBuffer);
-        const pdfjsLib   = await import("pdfjs-dist");
-        pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
-          "pdfjs-dist/build/pdf.worker.min.mjs",
-          import.meta.url
-        ).toString();
-        const pdf  = await pdfjsLib.getDocument({ data: typedArray }).promise;
-        let   text = "";
-        for (let i = 1; i <= pdf.numPages; i++) {
-          const page    = await pdf.getPage(i);
-          const content = await page.getTextContent();
-          text += content.items.map((item: unknown) => {
-            const it = item as { str?: string };
-            return typeof it.str === "string" ? it.str : "";
-          }).join(" ") + "\n";
-        }
-        resolve(text.trim());
-      } catch (err) { reject(err); }
-    };
-    reader.onerror = () => reject(new Error("Failed to read file"));
-    reader.readAsArrayBuffer(file);
-  });
+function resumeDataToText(resume: Record<string, unknown>): string {
+  const lines: string[] = [];
+
+  const p = resume.personalInfo as Record<string, string> | undefined;
+  if (p) {
+    if (p.fullName)  lines.push(p.fullName);
+    if (p.jobTitle)  lines.push(p.jobTitle);
+    if (p.email)     lines.push(p.email);
+    if (p.phone)     lines.push(p.phone);
+    if (p.location)  lines.push(p.location);
+    if (p.linkedin)  lines.push(p.linkedin);
+    if (p.github)    lines.push(p.github);
+    if (p.website)   lines.push(p.website);
+    lines.push("");
+  }
+
+  if (resume.summary) {
+    lines.push("SUMMARY");
+    lines.push(resume.summary as string);
+    lines.push("");
+  }
+
+  const exp = resume.experience as Array<Record<string, unknown>> | undefined;
+  if (exp?.length) {
+    lines.push("EXPERIENCE");
+    for (const e of exp) {
+      if (e.role || e.company) lines.push(`${e.role ?? ""} at ${e.company ?? ""}`.trim());
+      if (e.location)          lines.push(e.location as string);
+      if (e.startDate)         lines.push(`${e.startDate} - ${e.current ? "Present" : e.endDate ?? ""}`);
+      if (e.description)       lines.push(e.description as string);
+      lines.push("");
+    }
+  }
+
+  const edu = resume.education as Array<Record<string, unknown>> | undefined;
+  if (edu?.length) {
+    lines.push("EDUCATION");
+    for (const e of edu) {
+      if (e.institution) lines.push(e.institution as string);
+      if (e.degree)      lines.push(`${e.degree} ${e.field ?? ""}`.trim());
+      if (e.startDate)   lines.push(`${e.startDate} - ${e.current ? "Present" : e.endDate ?? ""}`);
+      if (e.description) lines.push(e.description as string);
+      lines.push("");
+    }
+  }
+
+  const skills = resume.skills as Array<Record<string, unknown>> | undefined;
+  if (skills?.length) {
+    lines.push("SKILLS");
+    lines.push(skills.filter(s => s.name).map(s => s.name).join(", "));
+    lines.push("");
+  }
+
+  const projects = resume.projects as Array<Record<string, unknown>> | undefined;
+  if (projects?.length) {
+    lines.push("PROJECTS");
+    for (const pr of projects) {
+      if (pr.name)        lines.push(pr.name as string);
+      if (pr.tech && Array.isArray(pr.tech)) lines.push((pr.tech as string[]).join(", "));
+      if (pr.description) lines.push(pr.description as string);
+      lines.push("");
+    }
+  }
+
+  const certs = resume.certifications as Array<Record<string, unknown>> | undefined;
+  if (certs?.length) {
+    lines.push("CERTIFICATIONS");
+    for (const c of certs) {
+      if (c.name)   lines.push(c.name as string);
+      if (c.issuer) lines.push(c.issuer as string);
+      if (c.date)   lines.push(c.date as string);
+      lines.push("");
+    }
+  }
+
+  return lines.join("\n").trim();
 }
 
-async function extractDOCX(file: File): Promise<string> {
-  const mammoth     = await import("mammoth");
-  const arrayBuffer = await file.arrayBuffer();
-  const result      = await mammoth.extractRawText({ arrayBuffer });
+// ─── PDF text extraction ──────────────────────────────────────
+
+async function extractPDF(arrayBuffer: ArrayBuffer): Promise<string> {
+  const typedArray = new Uint8Array(arrayBuffer);
+  const pdfjsLib   = await import("pdfjs-dist");
+  pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
+    "pdfjs-dist/build/pdf.worker.min.mjs",
+    import.meta.url
+  ).toString();
+  const pdf  = await pdfjsLib.getDocument({ data: typedArray }).promise;
+  let   text = "";
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page    = await pdf.getPage(i);
+    const content = await page.getTextContent();
+    text += content.items.map((item: unknown) => {
+      const it = item as { str?: string };
+      return typeof it.str === "string" ? it.str : "";
+    }).join(" ") + "\n";
+  }
+  return text.trim();
+}
+
+async function extractDOCX(arrayBuffer: ArrayBuffer): Promise<string> {
+  const mammoth = await import("mammoth");
+  const result  = await mammoth.extractRawText({ arrayBuffer });
   return result.value.trim();
 }
 
@@ -128,10 +199,17 @@ function PremiumStar() {
 
 // ─── Built Resume Card ────────────────────────────────────────
 
-function ResumeCardItem({ resume, onDelete }: { resume: ResumeCard; onDelete: (id: string) => void }) {
-  const [deleting, setDeleting] = useState(false);
-  const [confirm,  setConfirm]  = useState(false);
-  const { getIdToken } = useAuth();
+function ResumeCardItem({ resume, onDelete, onReviewDone }: {
+  resume: ResumeCard;
+  onDelete: (id: string) => void;
+  onReviewDone: (id: string, score: number) => void;
+}) {
+  const [deleting,   setDeleting]   = useState(false);
+  const [confirm,    setConfirm]    = useState(false);
+  const [reviewing,  setReviewing]  = useState(false);
+  const [reviewStep, setReviewStep] = useState<string>("");
+  const { user, getIdToken } = useAuth();
+  const router = useRouter();
 
   async function handleDelete() {
     if (!confirm) { setConfirm(true); return; }
@@ -152,11 +230,67 @@ function ResumeCardItem({ resume, onDelete }: { resume: ResumeCard; onDelete: (i
     }
   }
 
+  // Fetch full resume data from API, convert to text, then send to review endpoint
+  async function handleReview() {
+    if (!user) return;
+    setReviewing(true);
+    try {
+      setReviewStep("Loading resume…");
+      const token = await getIdToken();
+      if (!token) throw new Error("Session expired.");
+
+      const res = await fetch(`/api/resume/${resume.id}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error("Could not load resume data.");
+      const { resume: fullResume } = await res.json();
+
+      setReviewStep("Preparing text…");
+      let resumeText = resumeDataToText(fullResume);
+      if (!resumeText || resumeText.length < 50) {
+        throw new Error("Resume has too little content to review. Please fill in more details first.");
+      }
+      if (resumeText.length > 15000) resumeText = resumeText.slice(0, 15000);
+
+      setReviewStep("Analysing with AI…");
+      const reviewRes = await fetch("/api/ai/review-resume", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization:  `Bearer ${token}`,
+        },
+        body: JSON.stringify({ resumeText, resumeId: resume.id }),
+      });
+      const data = await reviewRes.json();
+
+      if (!reviewRes.ok) {
+        if (reviewRes.status === 429) throw new Error("Too many review requests. Please wait.");
+        if (reviewRes.status === 503) throw new Error("AI service temporarily unavailable.");
+        throw new Error(data.error ?? "Review failed.");
+      }
+
+      const reviewId = crypto.randomUUID();
+      sessionStorage.setItem(`review:${reviewId}`, JSON.stringify({
+        ...data,
+        fileName:  resume.title,
+        reviewedAt: new Date().toISOString(),
+        resumeId:  resume.id,
+      }));
+
+      onReviewDone(resume.id, data.overallScore);
+      router.push(`/review/${reviewId}`);
+
+    } catch (err: unknown) {
+      toast.error((err as Error).message);
+    } finally {
+      setReviewing(false);
+      setReviewStep("");
+    }
+  }
+
   return (
     <div className="resume-card">
-      {/* Gold star shown when this resume has been AI-reviewed */}
       {resume.lastReviewScore !== null && <PremiumStar />}
-
       {resume.lastReviewScore !== null && <ScoreRing score={resume.lastReviewScore} />}
       <div className="resume-template-tag badge badge-muted">{templateLabel(resume.template)}</div>
       <div className="resume-preview">
@@ -169,23 +303,38 @@ function ResumeCardItem({ resume, onDelete }: { resume: ResumeCard; onDelete: (i
         <h5 className="resume-title">{resume.title}</h5>
         <span className="resume-date">Edited {timeAgo(resume.updatedAt._seconds)}</span>
       </div>
-      <div className="resume-actions">
-        <Link href={`/resume/${resume.id}/edit`} className="btn btn-secondary btn-sm" style={{ flex: 1, justifyContent: "center" }}>Edit</Link>
-        <Link href={`/review/upload?resumeId=${resume.id}`} className="btn btn-ghost btn-sm" style={{ flex: 1, justifyContent: "center" }}>Review</Link>
-        <button
-          className={`btn btn-sm ${confirm ? "btn-danger" : "btn-ghost"}`}
-          onClick={handleDelete}
-          disabled={deleting}
-          title={confirm ? "Click again to confirm" : "Delete"}
-          style={{ flexShrink: 0 }}
-        >
-          {deleting ? <span className="spinner" style={{ width: 14, height: 14 }} /> : confirm ? "Sure?" : (
-            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-              <path d="M2 3.5h10M5.5 3.5V2h3v1.5M6 6v4M8 6v4M3 3.5l.7 8h6.6l.7-8" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
-            </svg>
-          )}
-        </button>
-      </div>
+
+      {reviewing ? (
+        <div className="reviewing-inline">
+          <span className="spinner" style={{ width: 13, height: 13 }} />
+          <span>{reviewStep || "Reviewing…"}</span>
+        </div>
+      ) : (
+        <div className="resume-actions">
+          <Link href={`/resume/${resume.id}/edit`} className="btn btn-secondary btn-sm" style={{ flex: 1, justifyContent: "center" }}>Edit</Link>
+          {/* Review now uses the stored resume data — no file upload needed */}
+          <button
+            className="btn btn-ghost btn-sm"
+            style={{ flex: 1, justifyContent: "center" }}
+            onClick={handleReview}
+          >
+            Review
+          </button>
+          <button
+            className={`btn btn-sm ${confirm ? "btn-danger" : "btn-ghost"}`}
+            onClick={handleDelete}
+            disabled={deleting}
+            title={confirm ? "Click again to confirm" : "Delete"}
+            style={{ flexShrink: 0 }}
+          >
+            {deleting ? <span className="spinner" style={{ width: 14, height: 14 }} /> : confirm ? "Sure?" : (
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                <path d="M2 3.5h10M5.5 3.5V2h3v1.5M6 6v4M8 6v4M3 3.5l.7 8h6.6l.7-8" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+            )}
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -201,13 +350,12 @@ function UploadedResumeCardItem({
   onDelete:     (id: string) => void;
   onReviewDone: (id: string, score: number) => void;
 }) {
-  const [deleting,    setDeleting]    = useState(false);
-  const [confirm,     setConfirm]     = useState(false);
-  const [reviewing,   setReviewing]   = useState(false);
-  const [reviewStep,  setReviewStep]  = useState<string>("");
-  const inputRef                      = useRef<HTMLInputElement>(null);
-  const { user, getIdToken }          = useAuth();
-  const router                        = useRouter();
+  const [deleting,   setDeleting]   = useState(false);
+  const [confirm,    setConfirm]    = useState(false);
+  const [reviewing,  setReviewing]  = useState(false);
+  const [reviewStep, setReviewStep] = useState<string>("");
+  const { user, getIdToken }        = useAuth();
+  const router                      = useRouter();
 
   async function handleDelete() {
     if (!confirm) { setConfirm(true); return; }
@@ -228,58 +376,63 @@ function UploadedResumeCardItem({
     }
   }
 
-  async function handleReview(file: File) {
+  // Download the already-uploaded file from storage, extract text, then review
+  async function handleReview() {
     if (!user) return;
     setReviewing(true);
     try {
+      setReviewStep("Fetching your file…");
+      const token = await getIdToken();
+      if (!token) throw new Error("Session expired.");
+
+      // Ask our own API to give us a signed/download URL for the stored file
+      const urlRes = await fetch(`/api/uploaded-resume/${resume.id}/download-url`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!urlRes.ok) throw new Error("Could not retrieve your file. Try uploading again.");
+      const { url } = await urlRes.json();
+
       setReviewStep("Extracting text…");
+      const fileRes = await fetch(url);
+      if (!fileRes.ok) throw new Error("File download failed.");
+      const arrayBuffer = await fileRes.arrayBuffer();
+
       let resumeText = "";
-      if (file.type === "application/pdf") {
-        resumeText = await extractPDF(file);
+      if (resume.fileType === "pdf") {
+        resumeText = await extractPDF(arrayBuffer);
       } else {
-        resumeText = await extractDOCX(file);
+        resumeText = await extractDOCX(arrayBuffer);
       }
+
       if (!resumeText || resumeText.length < 50) {
         throw new Error("Could not extract enough text. Make sure it is not a scanned image PDF.");
       }
       if (resumeText.length > 15000) resumeText = resumeText.slice(0, 15000);
 
-      setReviewStep("Saving to storage…");
-      const token = await getIdToken();
-      if (!token) throw new Error("Session expired.");
-
-      const formData = new FormData();
-      formData.append("file", file);
-      const uploadRes = await fetch("/api/upload", {
-        method: "POST", headers: { Authorization: `Bearer ${token}` }, body: formData,
-      });
-      if (!uploadRes.ok) throw new Error("Upload failed.");
-      const { uploadedResumeId: newUploadedId } = await uploadRes.json();
-
       setReviewStep("Analysing with AI…");
-      const res  = await fetch("/api/ai/review-resume", {
+      const reviewRes = await fetch("/api/ai/review-resume", {
         method: "POST",
         headers: {
-          "Content-Type":          "application/json",
-          Authorization:           `Bearer ${token}`,
-          "x-uploaded-resume-id":  newUploadedId,
+          "Content-Type":         "application/json",
+          Authorization:          `Bearer ${token}`,
+          "x-uploaded-resume-id": resume.id,
         },
         body: JSON.stringify({ resumeText }),
       });
-      const data = await res.json();
+      const data = await reviewRes.json();
 
-      if (!res.ok) {
-        if (res.status === 429) throw new Error("Too many review requests. Please wait.");
-        if (res.status === 503) throw new Error("AI service temporarily unavailable.");
+      if (!reviewRes.ok) {
+        if (reviewRes.status === 429) throw new Error("Too many review requests. Please wait.");
+        if (reviewRes.status === 503) throw new Error("AI service temporarily unavailable.");
         throw new Error(data.error ?? "Review failed.");
       }
 
       const reviewId = crypto.randomUUID();
       sessionStorage.setItem(`review:${reviewId}`, JSON.stringify({
         ...data,
-        fileName:         file.name,
+        fileName:         resume.fileName,
         reviewedAt:       new Date().toISOString(),
-        uploadedResumeId: newUploadedId,
+        uploadedResumeId: resume.id,
       }));
 
       onReviewDone(resume.id, data.overallScore);
@@ -293,24 +446,13 @@ function UploadedResumeCardItem({
     }
   }
 
-  function onFileChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const f = e.target.files?.[0];
-    if (!f) return;
-    const allowed = ["application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"];
-    if (!allowed.includes(f.type)) { toast.error("Only PDF or DOCX files are supported."); return; }
-    if (f.size > 5 * 1024 * 1024)  { toast.error("File must be under 5MB."); return; }
-    handleReview(f);
-  }
-
   const shortName = resume.fileName.length > 26
     ? resume.fileName.slice(0, 23) + "…"
     : resume.fileName;
 
   return (
     <div className="resume-card uploaded-card">
-      {/* Gold star shown when this uploaded resume has been AI-reviewed */}
       {resume.lastReviewScore !== null && <PremiumStar />}
-
       {resume.lastReviewScore !== null && <ScoreRing score={resume.lastReviewScore} />}
 
       <div className="resume-template-tag badge badge-muted" style={{ display: "flex", alignItems: "center", gap: 4 }}>
@@ -334,14 +476,6 @@ function UploadedResumeCardItem({
       </div>
 
       <div className="resume-actions">
-        <input
-          ref={inputRef}
-          type="file"
-          accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-          style={{ display: "none" }}
-          onChange={onFileChange}
-        />
-
         {reviewing ? (
           <div className="reviewing-inline">
             <span className="spinner" style={{ width: 13, height: 13 }} />
@@ -349,11 +483,12 @@ function UploadedResumeCardItem({
           </div>
         ) : (
           <>
+            {/* Review now fetches the already-stored file — no re-upload needed */}
             <button
               className="btn btn-primary btn-sm"
               style={{ flex: 1, justifyContent: "center" }}
-              onClick={() => inputRef.current?.click()}
-              title="Pick file to review"
+              onClick={handleReview}
+              title="Review this resume"
             >
               Review
             </button>
@@ -373,12 +508,6 @@ function UploadedResumeCardItem({
           </>
         )}
       </div>
-
-      {resume.lastReviewScore === null && !reviewing && (
-        <p style={{ fontSize: "var(--text-xs)", color: "var(--text-disabled)", marginTop: "calc(var(--space-2) * -1)" }}>
-          Click Review and select your file to analyse it.
-        </p>
-      )}
     </div>
   );
 }
@@ -546,21 +675,12 @@ function DashboardContent() {
         .resume-score { position: absolute; top: var(--space-4); right: var(--space-4); display: flex; align-items: center; gap: 5px; font-size: var(--text-xs); font-weight: 700; }
         .resume-template-tag { align-self: flex-start; }
 
-        /* ── Premium star ── */
         .premium-star {
-          position: absolute;
-          top: -6px;
-          left: -6px;
-          width: 22px;
-          height: 22px;
-          background: var(--gold-dim);
-          border: 1px solid var(--gold-border);
-          border-radius: 50%;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          box-shadow: 0 0 8px rgba(201,168,76,0.35);
-          z-index: 1;
+          position: absolute; top: -6px; left: -6px;
+          width: 22px; height: 22px;
+          background: var(--gold-dim); border: 1px solid var(--gold-border);
+          border-radius: 50%; display: flex; align-items: center; justify-content: center;
+          box-shadow: 0 0 8px rgba(201,168,76,0.35); z-index: 1;
         }
 
         .resume-preview { background: #fff; border-radius: var(--radius-sm); padding: 12px 10px; display: flex; flex-direction: column; gap: 4px; }
@@ -712,6 +832,9 @@ function DashboardContent() {
                         <ResumeCardItem
                           resume={r}
                           onDelete={id => setResumes(prev => prev.filter(x => x.id !== id))}
+                          onReviewDone={(id, score) => setResumes(prev =>
+                            prev.map(x => x.id === id ? { ...x, lastReviewScore: score } : x)
+                          )}
                         />
                       </div>
                     ))}

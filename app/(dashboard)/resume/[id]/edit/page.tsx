@@ -1,10 +1,5 @@
 "use client";
 // app/(dashboard)/resume/[id]/edit/page.tsx
-// ============================================================
-// EDIT RESUME PAGE
-// Loads an existing resume from Firestore via API,
-// pre-fills the builder form, and saves changes on update.
-// ============================================================
 
 import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
@@ -33,6 +28,89 @@ const defaultPersonal: PersonalInfo = {
   linkedin: "", github: "", website: "", jobTitle: "",
 };
 
+// ─── Resume data → plain text (same as dashboard) ─────────────
+
+function resumeDataToText(resume: {
+  personalInfo?: PersonalInfo;
+  summary?: string;
+  experience?: ExperienceItem[];
+  education?: EducationItem[];
+  skills?: SkillItem[];
+  projects?: ProjectItem[];
+  certifications?: CertificationItem[];
+}): string {
+  const lines: string[] = [];
+
+  const p = resume.personalInfo;
+  if (p) {
+    if (p.fullName)  lines.push(p.fullName);
+    if (p.jobTitle)  lines.push(p.jobTitle);
+    if (p.email)     lines.push(p.email);
+    if (p.phone)     lines.push(p.phone);
+    if (p.location)  lines.push(p.location);
+    if (p.linkedin)  lines.push(p.linkedin);
+    if (p.github)    lines.push(p.github);
+    if (p.website)   lines.push(p.website);
+    lines.push("");
+  }
+
+  if (resume.summary) {
+    lines.push("SUMMARY");
+    lines.push(resume.summary);
+    lines.push("");
+  }
+
+  if (resume.experience?.length) {
+    lines.push("EXPERIENCE");
+    for (const e of resume.experience) {
+      if (e.role || e.company) lines.push(`${e.role ?? ""} at ${e.company ?? ""}`.trim());
+      if (e.location)          lines.push(e.location);
+      if (e.startDate)         lines.push(`${e.startDate} - ${e.current ? "Present" : e.endDate ?? ""}`);
+      if (e.description)       lines.push(e.description);
+      lines.push("");
+    }
+  }
+
+  if (resume.education?.length) {
+    lines.push("EDUCATION");
+    for (const e of resume.education) {
+      if (e.institution) lines.push(e.institution);
+      if (e.degree)      lines.push(`${e.degree} ${e.field ?? ""}`.trim());
+      if (e.startDate)   lines.push(`${e.startDate} - ${e.current ? "Present" : e.endDate ?? ""}`);
+      if (e.description) lines.push(e.description);
+      lines.push("");
+    }
+  }
+
+  if (resume.skills?.length) {
+    lines.push("SKILLS");
+    lines.push(resume.skills.filter(s => s.name).map(s => s.name).join(", "));
+    lines.push("");
+  }
+
+  if (resume.projects?.length) {
+    lines.push("PROJECTS");
+    for (const pr of resume.projects) {
+      if (pr.name)        lines.push(pr.name);
+      if (pr.tech.length) lines.push(pr.tech.join(", "));
+      if (pr.description) lines.push(pr.description);
+      lines.push("");
+    }
+  }
+
+  if (resume.certifications?.length) {
+    lines.push("CERTIFICATIONS");
+    for (const c of resume.certifications) {
+      if (c.name)   lines.push(c.name);
+      if (c.issuer) lines.push(c.issuer);
+      if (c.date)   lines.push(c.date);
+      lines.push("");
+    }
+  }
+
+  return lines.join("\n").trim();
+}
+
 export default function EditResumePage({
   params,
 }: {
@@ -41,10 +119,12 @@ export default function EditResumePage({
   const router   = useRouter();
   const { user, getIdToken } = useAuth();
 
-  const [resumeId, setResumeId] = useState<string | null>(null);
-  const [fetching, setFetching] = useState(true);
-  const [saving,   setSaving]   = useState(false);
-  const [notFound, setNotFound] = useState(false);
+  const [resumeId,    setResumeId]    = useState<string | null>(null);
+  const [fetching,    setFetching]    = useState(true);
+  const [saving,      setSaving]      = useState(false);
+  const [notFound,    setNotFound]    = useState(false);
+  const [reviewing,   setReviewing]   = useState(false);
+  const [reviewStep,  setReviewStep]  = useState<string>("");
 
   // Form state
   const [title,     setTitle]    = useState("My Resume");
@@ -83,7 +163,6 @@ export default function EditResumePage({
 
       const { resume } = await res.json();
 
-      // Pre-fill all form state
       setTitle(resume.title ?? "My Resume");
       setTemplate(resume.template ?? "classic");
       setPersonal(resume.personalInfo ?? defaultPersonal);
@@ -126,14 +205,9 @@ export default function EditResumePage({
           Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({
-          title,
-          template,
-          personalInfo:   personal,
-          summary,
-          experience,
-          education,
-          skills,
-          projects,
+          title, template,
+          personalInfo: personal,
+          summary, experience, education, skills, projects,
           certifications: certs,
         }),
       });
@@ -152,6 +226,65 @@ export default function EditResumePage({
     }
   }
 
+  // ── Review — uses the current in-memory resume state ───────
+  async function handleReview() {
+    if (!user || !resumeId) return;
+
+    setReviewing(true);
+    try {
+      setReviewStep("Preparing…");
+      const token = await getIdToken();
+      if (!token) throw new Error("Session expired.");
+
+      let resumeText = resumeDataToText({
+        personalInfo: personal,
+        summary,
+        experience,
+        education,
+        skills,
+        projects,
+        certifications: certs,
+      });
+
+      if (!resumeText || resumeText.length < 50) {
+        throw new Error("Resume has too little content to review. Please fill in more details first.");
+      }
+      if (resumeText.length > 15000) resumeText = resumeText.slice(0, 15000);
+
+      setReviewStep("Analysing with AI…");
+      const res  = await fetch("/api/ai/review-resume", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization:  `Bearer ${token}`,
+        },
+        body: JSON.stringify({ resumeText, resumeId }),
+      });
+      const data = await res.json();
+
+      if (!res.ok) {
+        if (res.status === 429) throw new Error("Too many review requests. Please wait.");
+        if (res.status === 503) throw new Error("AI service temporarily unavailable.");
+        throw new Error(data.error ?? "Review failed.");
+      }
+
+      const reviewId = crypto.randomUUID();
+      sessionStorage.setItem(`review:${reviewId}`, JSON.stringify({
+        ...data,
+        fileName:   title,
+        reviewedAt: new Date().toISOString(),
+        resumeId,
+      }));
+
+      router.push(`/review/${reviewId}`);
+    } catch (err: unknown) {
+      toast.error((err as Error).message);
+    } finally {
+      setReviewing(false);
+      setReviewStep("");
+    }
+  }
+
   // ── Not found ──────────────────────────────────────────────
   if (notFound) {
     return (
@@ -167,9 +300,7 @@ export default function EditResumePage({
         <p style={{ color: "var(--text-secondary)", fontSize: "var(--text-sm)" }}>
           This resume doesn&apos;t exist or you don&apos;t have access to it.
         </p>
-        <Link href="/dashboard" className="btn btn-primary">
-          Back to Dashboard
-        </Link>
+        <Link href="/dashboard" className="btn btn-primary">Back to Dashboard</Link>
       </div>
     );
   }
@@ -189,7 +320,8 @@ export default function EditResumePage({
           border-bottom: 1px solid var(--border);
           flex-shrink: 0; z-index: var(--z-sticky);
         }
-        .builder-topbar-left { display: flex; align-items: center; gap: var(--space-4); }
+        .builder-topbar-left  { display: flex; align-items: center; gap: var(--space-4); }
+        .builder-topbar-right { display: flex; align-items: center; gap: var(--space-2); }
         .back-link {
           color: var(--text-secondary); text-decoration: none;
           display: flex; align-items: center; gap: var(--space-2);
@@ -227,21 +359,21 @@ export default function EditResumePage({
           display: flex; align-items: flex-start; justify-content: center;
           padding: var(--space-8) var(--space-6);
         }
-
-        /* Loading skeleton */
         .builder-loading {
           flex: 1; display: flex; align-items: center; justify-content: center;
           flex-direction: column; gap: var(--space-4);
         }
-
-        /* Edit badge */
         .edit-badge {
           font-size: var(--text-xs); font-weight: 600;
           padding: 3px 8px; border-radius: var(--radius-sm);
           background: var(--info-dim); color: var(--info);
           border: 1px solid rgba(96,165,250,.2);
         }
-
+        .reviewing-status {
+          display: flex; align-items: center; gap: var(--space-2);
+          font-size: var(--text-xs); color: var(--text-secondary);
+          padding: 0 var(--space-2);
+        }
         @media (max-width: 900px) {
           .builder-body { grid-template-columns: 1fr; }
           .preview-panel { display: none; }
@@ -284,13 +416,36 @@ export default function EditResumePage({
             ))}
           </div>
 
-          <button
-            className={`btn btn-primary btn-sm${saving ? " btn-loading" : ""}`}
-            onClick={handleSave}
-            disabled={saving || fetching}
-          >
-            {saving ? "" : "Save Changes"}
-          </button>
+          <div className="builder-topbar-right">
+            {/* Review button — reviews the resume as currently built */}
+            {reviewing ? (
+              <div className="reviewing-status">
+                <span className="spinner" style={{ width: 13, height: 13 }} />
+                <span>{reviewStep || "Reviewing…"}</span>
+              </div>
+            ) : (
+              <button
+                className="btn btn-secondary btn-sm"
+                onClick={handleReview}
+                disabled={fetching || saving}
+                title="Review this resume with AI"
+              >
+                <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
+                  <circle cx="6.5" cy="6.5" r="5" stroke="currentColor" strokeWidth="1.2"/>
+                  <path d="M6.5 4v3l2 1" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
+                </svg>
+                Review
+              </button>
+            )}
+
+            <button
+              className={`btn btn-primary btn-sm${saving ? " btn-loading" : ""}`}
+              onClick={handleSave}
+              disabled={saving || fetching}
+            >
+              {saving ? "" : "Save Changes"}
+            </button>
+          </div>
         </header>
 
         {/* ── Body ────────────────────────────────────────── */}
@@ -303,7 +458,6 @@ export default function EditResumePage({
           </div>
         ) : (
           <div className="builder-body">
-            {/* Form */}
             <div className="form-panel">
               <ResumeForm
                 personal={personal}
@@ -322,8 +476,6 @@ export default function EditResumePage({
                 onCertsChange={setCerts}
               />
             </div>
-
-            {/* Preview */}
             <div className="preview-panel">
               <ResumePreview
                 template={template}

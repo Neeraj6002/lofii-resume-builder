@@ -11,24 +11,30 @@ import { getAdminDb, getAdminStorage } from "@/lib/firebase/admin";
 
 export async function DELETE(
   request: Request,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const authHeader = request.headers.get("Authorization");
     const decoded    = await verifyAuthToken(authHeader);
     const uid        = decoded.uid;
-    const { id }     = params;
+    const { id }     = await params;
+
+    console.log(`[DELETE uploaded-resume] uid=${uid} id=${id}`);
 
     const adminDb  = getAdminDb();
     const docRef   = adminDb.collection("uploadedResumes").doc(id);
     const snap     = await docRef.get();
 
     if (!snap.exists) {
+      console.warn(`[DELETE uploaded-resume] Doc not found: ${id}`);
       return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
 
     const data = snap.data()!;
+    console.log(`[DELETE uploaded-resume] storagePath=${data.storagePath} owner=${data.userId}`);
+
     if (data.userId !== uid) {
+      console.warn(`[DELETE uploaded-resume] Forbidden: owner=${data.userId} requester=${uid}`);
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
@@ -36,14 +42,17 @@ export async function DELETE(
     try {
       const storage = getAdminStorage();
       const bucket  = storage.bucket();
+      console.log(`[DELETE uploaded-resume] Deleting from bucket: ${bucket.name} path: ${data.storagePath}`);
       await bucket.file(data.storagePath).delete();
-    } catch {
-      // File may already be gone — continue with Firestore delete
-      console.warn(`[DELETE uploaded-resume] Storage file not found: ${data.storagePath}`);
+      console.log(`[DELETE uploaded-resume] Storage file deleted OK`);
+    } catch (storageErr) {
+      // Log full error but continue — file may already be gone
+      console.error(`[DELETE uploaded-resume] Storage delete failed:`, storageErr);
     }
 
     // Delete Firestore doc
     await docRef.delete();
+    console.log(`[DELETE uploaded-resume] Firestore doc deleted OK`);
 
     return NextResponse.json({ success: true });
 
@@ -51,7 +60,7 @@ export async function DELETE(
     const error = err as Error;
     if (error.message === "UNAUTHORIZED")
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    console.error("[DELETE /api/uploaded-resume/[id]]", error);
+    console.error("[DELETE /api/uploaded-resume/[id]] FULL ERROR:", err);
     return NextResponse.json({ error: "Failed to delete" }, { status: 500 });
   }
 }
