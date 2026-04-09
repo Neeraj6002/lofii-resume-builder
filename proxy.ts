@@ -1,28 +1,28 @@
-// middleware.ts
-// ============================================================
-// MIDDLEWARE — Auth gate + Security headers
-// Runs on Node.js runtime (required for Firebase Admin).
-// Verifies session cookie for protected routes.
-// ============================================================
-
+// proxy.ts
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
-// Routes that require authentication
 const PROTECTED_ROUTES = ["/dashboard", "/resume", "/review"];
-
-// Routes that should redirect logged-in users away
 const AUTH_ROUTES = ["/login", "/register"];
 
-export async function middleware(request: NextRequest) {
-  const { pathname }  = request.nextUrl;
+export async function proxy(request: NextRequest) {
+  const { pathname } = request.nextUrl;
+
+  // Skip static assets
+  if (
+    pathname.startsWith("/_next/static") ||
+    pathname.startsWith("/_next/image") ||
+    pathname === "/favicon.ico" ||
+    /\.(?:svg|png|jpg|jpeg|gif|webp)$/.test(pathname)
+  ) {
+    return NextResponse.next();
+  }
+
   const sessionCookie = request.cookies.get("__session")?.value;
   let isAuthenticated = false;
 
-  // Verify session cookie using Firebase Admin
   if (sessionCookie) {
     try {
-      // Dynamic import so Firebase Admin only loads on server
       const { getAdminAuth } = await import("@/lib/firebase/admin");
       const adminAuth = getAdminAuth();
       await adminAuth.verifySessionCookie(sessionCookie, true);
@@ -32,9 +32,8 @@ export async function middleware(request: NextRequest) {
     }
   }
 
-  // ── Auth Guards ─────────────────────────────────────────────
   const isProtected = PROTECTED_ROUTES.some((r) => pathname.startsWith(r));
-  const isAuthRoute = AUTH_ROUTES.some((r) => pathname.startsWith(r));
+  const isAuthRoute  = AUTH_ROUTES.some((r) => pathname.startsWith(r));
 
   if (isProtected && !isAuthenticated) {
     const loginUrl = new URL("/login", request.url);
@@ -46,14 +45,14 @@ export async function middleware(request: NextRequest) {
     return NextResponse.redirect(new URL("/dashboard", request.url));
   }
 
-  // ── Security Headers ─────────────────────────────────────────
+  // ── Security Headers ────────────────────────────────────────
   const response = NextResponse.next();
 
-  response.headers.set("X-Frame-Options",           "DENY");
-  response.headers.set("X-Content-Type-Options",    "nosniff");
-  response.headers.set("X-XSS-Protection",          "1; mode=block");
-  response.headers.set("Referrer-Policy",            "strict-origin-when-cross-origin");
-  response.headers.set("Permissions-Policy",         "camera=(), microphone=(), geolocation=(), payment=()");
+  response.headers.set("X-Frame-Options",       "DENY");
+  response.headers.set("X-Content-Type-Options", "nosniff");
+  response.headers.set("X-XSS-Protection",       "1; mode=block");
+  response.headers.set("Referrer-Policy",         "strict-origin-when-cross-origin");
+  response.headers.set("Permissions-Policy",      "camera=(), microphone=(), geolocation=(), payment=()");
 
   if (process.env.NODE_ENV === "production") {
     response.headers.set(
@@ -79,9 +78,9 @@ export async function middleware(request: NextRequest) {
   return response;
 }
 
+// ✅ Required — tells Next.js which routes to run the proxy on
 export const config = {
   matcher: [
     "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
   ],
-  runtime: "nodejs",
 };

@@ -37,12 +37,13 @@ const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions";
  */
 const MODELS = [
   "openrouter/free",  // auto-selects best free model
+  "nvidia/llama-3.1-nemotron-70b-instruct:free",   // long context fallback
   "qwen/qwen3.6-plus",
   "stepfun/step-3.5-flash",                    
   "meta-llama/llama-3.3-70b-instruct:free",        // strong, reliable
   "qwen/qwen3-14b:free",                           // good instruction following
   "mistralai/mistral-small-3.1-24b-instruct:free", // solid fallback
-  "nvidia/llama-3.1-nemotron-70b-instruct:free",   // long context fallback
+  
 ];
 
 const MAX_RETRIES_PER_MODEL = 3;    // attempts per model before trying next

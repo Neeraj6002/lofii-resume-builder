@@ -1,9 +1,14 @@
 "use client";
 // components/resume/ResumePreview.tsx
 // ============================================================
-// RESUME PREVIEW
-// Right panel of the builder — renders the resume in real time.
-// Switches styles based on selected template.
+// RESUME PREVIEW — UPDATED
+// Fixes applied:
+//   1. Personal header: LinkedIn, GitHub, Website now show actual URLs (not just labels)
+//   2. Experience: Company shown ABOVE Role/Title in preview
+//   3. Skills: No more bubbles — plain comma-separated text grouped by category
+//   4. Projects: Technologies appear correctly; Live URL shown as clickable link
+//   5. Certifications: Credential ID now displayed in preview
+//   6. Print styles: @media print hides everything except the preview doc
 // ============================================================
 
 import type {
@@ -35,6 +40,31 @@ const ACCENTS: Record<ResumeTemplate, { primary: string; secondary: string }> = 
 // ─── Bullet parser ────────────────────────────────────────────
 function parseBullets(text: string): string[] {
   return text.split("\n").map(l => l.replace(/^[-•]\s*/, "").trim()).filter(Boolean);
+}
+
+// ─── Group skills by category ─────────────────────────────────
+const CATEGORY_LABELS: Record<string, string> = {
+  coding: "Coding / Programming",
+  tools:  "Tools & Software",
+  design: "Design",
+  other:  "Other",
+  "":     "Skills",
+};
+
+function groupSkills(skills: SkillItem[]): { category: string; label: string; names: string[] }[] {
+  const map = new Map<string, string[]>();
+  skills.filter(s => s.name).forEach(s => {
+    const cat = s.category || "";
+    if (!map.has(cat)) map.set(cat, []);
+    // Each skill entry's name may be comma-separated ("HTML, CSS, JS")
+    const names = s.name.split(",").map(n => n.trim()).filter(Boolean);
+    map.get(cat)!.push(...names);
+  });
+  return Array.from(map.entries()).map(([category, names]) => ({
+    category,
+    label: CATEGORY_LABELS[category] || category,
+    names,
+  }));
 }
 
 export default function ResumePreview({
@@ -91,11 +121,19 @@ export default function ResumePreview({
           margin-bottom: 3px;
         }
         .prev-role { font-size: 11px; margin-bottom: 8px; }
+
+        /* FIX: contacts row — show actual URL text, truncate if too long */
         .prev-contacts {
-          display: flex; flex-wrap: wrap; gap: 10px;
-          font-size: 8.5px; color: #555;
+          display: flex; flex-wrap: wrap; gap: 8px 14px;
+          font-size: 8px; color: #555;
         }
-        .prev-contacts span { display: flex; align-items: center; gap: 3px; }
+        .prev-contacts a,
+        .prev-contacts span {
+          display: inline-flex; align-items: center; gap: 3px;
+          color: inherit; text-decoration: none;
+          max-width: 200px; overflow: hidden;
+          text-overflow: ellipsis; white-space: nowrap;
+        }
 
         /* Divider */
         .prev-div { height: 1px; margin: 10px 0; }
@@ -120,9 +158,23 @@ export default function ResumePreview({
         .prev-bullets { margin-top: 3px; display: flex; flex-direction: column; gap: 2px; }
         .prev-bullet  { font-size: 9px; color: #333; padding-left: 8px; line-height: 1.5; }
 
-        /* Skills */
-        .prev-skills { display: flex; flex-wrap: wrap; gap: 4px; }
-        .prev-skill  { font-size: 8.5px; padding: 2px 7px; border: 1px solid; border-radius: 99px; }
+        /* FIX: Skills — plain text rows, no bubbles */
+        .prev-skill-row {
+          display: flex; flex-wrap: wrap; align-items: baseline;
+          gap: 0; margin-bottom: 4px; font-size: 9px; color: #333;
+        }
+        .prev-skill-category {
+          font-weight: 700; color: #333; margin-right: 6px;
+          flex-shrink: 0;
+        }
+        .prev-skill-names { color: #444; }
+
+        /* Project link */
+        .prev-proj-link {
+          font-size: 8px; color: #555;
+          text-decoration: none; display: inline-block;
+          margin-top: 2px;
+        }
 
         /* Watermark */
         .prev-watermark {
@@ -136,6 +188,26 @@ export default function ResumePreview({
         /* Tech template monospace tweaks */
         [data-t="tech"] .prev-name     { font-family: 'Courier New', monospace; }
         [data-t="tech"] .prev-sec-title { font-family: 'Courier New', monospace; letter-spacing: 0.06em; }
+
+        /* ── PRINT STYLES ── */
+        @media print {
+          /* Hide everything on the page */
+          body * { visibility: hidden !important; }
+          /* Show only the resume preview */
+          .preview-doc,
+          .preview-doc * { visibility: visible !important; }
+          .preview-doc {
+            position: fixed !important;
+            left: 0; top: 0;
+            width: 100% !important;
+            max-width: 100% !important;
+            min-height: 100vh !important;
+            box-shadow: none !important;
+            padding: 24px 36px !important;
+            margin: 0 !important;
+          }
+          .prev-watermark { display: none !important; }
+        }
       `}</style>
 
       <div className="preview-doc" data-t={template}>
@@ -155,12 +227,14 @@ export default function ResumePreview({
               <div className="prev-role" style={{ color: "rgba(255,255,255,.8)" }}>
                 {personal.jobTitle || "Your Job Title"}
               </div>
+              {/* FIX: show actual link values */}
               <div className="prev-contacts" style={{ color: "rgba(255,255,255,.7)" }}>
-                {personal.email    && <span>{personal.email}</span>}
-                {personal.phone    && <span>{personal.phone}</span>}
-                {personal.location && <span>{personal.location}</span>}
-                {personal.linkedin && <span>LinkedIn</span>}
-                {personal.github   && <span>GitHub</span>}
+                {personal.email    && <span>✉ {personal.email}</span>}
+                {personal.phone    && <span>📞 {personal.phone}</span>}
+                {personal.location && <span>📍 {personal.location}</span>}
+                {personal.linkedin && <span>🔗 {personal.linkedin}</span>}
+                {personal.github   && <span>🐙 {personal.github}</span>}
+                {personal.website  && <span>🌐 {personal.website}</span>}
               </div>
             </div>
             <div className="creative-body">
@@ -182,13 +256,14 @@ export default function ResumePreview({
               <div className="prev-role" style={{ color: accent.secondary }}>
                 {personal.jobTitle || "Your Job Title"}
               </div>
+              {/* FIX: show actual URL text for LinkedIn / GitHub / Website */}
               <div className="prev-contacts" style={{ justifyContent: template === "minimal" ? "flex-start" : "center" }}>
-                {personal.email    && <span>{personal.email}</span>}
-                {personal.phone    && <span>{personal.phone}</span>}
-                {personal.location && <span>{personal.location}</span>}
-                {personal.linkedin && <span>LinkedIn</span>}
-                {personal.github   && <span>GitHub</span>}
-                {personal.website  && <span>Portfolio</span>}
+                {personal.email    && <span>✉ {personal.email}</span>}
+                {personal.phone    && <span>📞 {personal.phone}</span>}
+                {personal.location && <span>📍 {personal.location}</span>}
+                {personal.linkedin && <span>🔗 {personal.linkedin}</span>}
+                {personal.github   && <span>🐙 {personal.github}</span>}
+                {personal.website  && <span>🌐 {personal.website}</span>}
               </div>
             </div>
 
@@ -224,6 +299,8 @@ function ResumeBody({
   projects: ProjectItem[];
   certifications: CertificationItem[];
 }) {
+  const skillGroups = groupSkills(skills);
+
   return (
     <>
       {/* Summary */}
@@ -234,7 +311,7 @@ function ResumeBody({
         </div>
       )}
 
-      {/* Experience */}
+      {/* Experience — FIX: Company above Role */}
       {experience.filter(e => e.company || e.role).length > 0 && (
         <div className="prev-sec">
           <div className="prev-sec-title" style={{ color: accent.primary }}>Experience</div>
@@ -242,8 +319,11 @@ function ResumeBody({
             <div key={exp.id} className="prev-entry">
               <div className="prev-entry-top">
                 <div>
-                  <div className="prev-entry-title">{exp.role || "Role"}</div>
-                  <div className="prev-entry-sub">{exp.company}{exp.location ? ` · ${exp.location}` : ""}</div>
+                  {/* FIX: Company is now the primary title, Role is subtitle */}
+                  <div className="prev-entry-title">{exp.company || "Company"}</div>
+                  <div className="prev-entry-sub">
+                    {exp.role}{exp.location ? ` · ${exp.location}` : ""}
+                  </div>
                 </div>
                 <div className="prev-entry-date">
                   {exp.startDate}{exp.startDate && " – "}{exp.current ? "Present" : exp.endDate}
@@ -286,37 +366,67 @@ function ResumeBody({
         </div>
       )}
 
-      {/* Skills */}
-      {skills.filter(s => s.name).length > 0 && (
+      {/* Skills — FIX: plain text, grouped by category, no bubbles, no level labels */}
+      {skillGroups.length > 0 && (
         <div className="prev-sec">
           <div className="prev-sec-title" style={{ color: accent.primary }}>Skills</div>
-          <div className="prev-skills">
-            {skills.filter(s => s.name).map(s => (
-              <span
-                key={s.id}
-                className="prev-skill"
-                style={{ borderColor: accent.primary, color: accent.primary }}
-              >
-                {s.name}
+          {skillGroups.map(group => (
+            <div key={group.category} className="prev-skill-row">
+              {/* Only show category label if category was set */}
+              {group.category && group.category !== "" && (
+                <span className="prev-skill-category" style={{ color: accent.primary }}>
+                  {group.label}:
+                </span>
+              )}
+              <span className="prev-skill-names">
+                {group.names.join(" · ")}
               </span>
-            ))}
-          </div>
+            </div>
+          ))}
         </div>
       )}
 
-      {/* Projects */}
+      {/* Projects — FIX: tech tags shown, Live URL shown */}
       {projects.filter(p => p.name).length > 0 && (
         <div className="prev-sec">
           <div className="prev-sec-title" style={{ color: accent.primary }}>Projects</div>
           {projects.filter(p => p.name).map(proj => (
             <div key={proj.id} className="prev-entry">
-              <div className="prev-entry-title">
-                {proj.name}
-                {proj.tech.length > 0 && (
-                  <span style={{ fontWeight: 400, color: "#666", marginLeft: 5 }}>
-                    · {proj.tech.join(", ")}
-                  </span>
-                )}
+              <div className="prev-entry-top">
+                <div style={{ flex: 1 }}>
+                  <div className="prev-entry-title">
+                    {proj.name}
+                    {/* FIX: show technologies inline */}
+                    {Array.isArray(proj.tech) && proj.tech.length > 0 && (
+                      <span style={{ fontWeight: 400, color: "#666", marginLeft: 5, fontSize: 8.5 }}>
+                        · {proj.tech.join(", ")}
+                      </span>
+                    )}
+                  </div>
+                  {/* FIX: Live URL shown below project name */}
+                  {proj.link && (
+                    <a
+                      href={proj.link}
+                      className="prev-proj-link"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      style={{ color: accent.secondary }}
+                    >
+                      🔗 {proj.link}
+                    </a>
+                  )}
+                  {proj.githubLink && (
+                    <a
+                      href={proj.githubLink}
+                      className="prev-proj-link"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      style={{ color: "#555", marginLeft: proj.link ? 8 : 0 }}
+                    >
+                      🐙 GitHub
+                    </a>
+                  )}
+                </div>
               </div>
               {proj.description && (
                 <div className="prev-bullets">
@@ -330,7 +440,7 @@ function ResumeBody({
         </div>
       )}
 
-      {/* Certifications */}
+      {/* Certifications — FIX: Credential ID shown */}
       {certifications.filter(c => c.name).length > 0 && (
         <div className="prev-sec">
           <div className="prev-sec-title" style={{ color: accent.primary }}>Certifications</div>
@@ -339,7 +449,27 @@ function ResumeBody({
               <div className="prev-entry-top">
                 <div>
                   <div className="prev-entry-title">{cert.name}</div>
-                  <div className="prev-entry-sub">{cert.issuer}</div>
+                  <div className="prev-entry-sub">
+                    {cert.issuer}
+                    {/* FIX: Credential ID shown here */}
+                    {cert.credentialId && (
+                      <span style={{ color: "#777", marginLeft: 5 }}>
+                        · ID: {cert.credentialId}
+                      </span>
+                    )}
+                  </div>
+                  {/* Certificate link */}
+                  {cert.link && (
+                    <a
+                      href={cert.link}
+                      className="prev-proj-link"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      style={{ color: accent.secondary }}
+                    >
+                      🔗 View Certificate
+                    </a>
+                  )}
                 </div>
                 <div className="prev-entry-date">{cert.date}</div>
               </div>

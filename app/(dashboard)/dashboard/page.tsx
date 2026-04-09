@@ -377,74 +377,70 @@ function UploadedResumeCardItem({
   }
 
   // Download the already-uploaded file from storage, extract text, then review
-  async function handleReview() {
-    if (!user) return;
-    setReviewing(true);
-    try {
-      setReviewStep("Fetching your file…");
-      const token = await getIdToken();
-      if (!token) throw new Error("Session expired.");
+ async function handleReview() {
+  if (!user) return;
+  setReviewing(true);
+  try {
+    setReviewStep("Fetching your file…");
+    const token = await getIdToken();
+    if (!token) throw new Error("Session expired.");
 
-      // Ask our own API to give us a signed/download URL for the stored file
-      const urlRes = await fetch(`/api/uploaded-resume/${resume.id}/download-url`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!urlRes.ok) throw new Error("Could not retrieve your file. Try uploading again.");
-      const { url } = await urlRes.json();
+    const urlRes = await fetch(`/api/uploaded-resume/${resume.id}/download-url`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!urlRes.ok) throw new Error("Could not retrieve your file. Try uploading again.");
 
-      setReviewStep("Extracting text…");
-      const fileRes = await fetch(url);
-      if (!fileRes.ok) throw new Error("File download failed.");
-      const arrayBuffer = await fileRes.arrayBuffer();
+    setReviewStep("Extracting text…");
+    const arrayBuffer = await urlRes.arrayBuffer();
 
-      let resumeText = "";
-      if (resume.fileType === "pdf") {
-        resumeText = await extractPDF(arrayBuffer);
-      } else {
-        resumeText = await extractDOCX(arrayBuffer);
-      }
-
-      if (!resumeText || resumeText.length < 50) {
-        throw new Error("Could not extract enough text. Make sure it is not a scanned image PDF.");
-      }
-      if (resumeText.length > 15000) resumeText = resumeText.slice(0, 15000);
-
-      setReviewStep("Analysing with AI…");
-      const reviewRes = await fetch("/api/ai/review-resume", {
-        method: "POST",
-        headers: {
-          "Content-Type":         "application/json",
-          Authorization:          `Bearer ${token}`,
-          "x-uploaded-resume-id": resume.id,
-        },
-        body: JSON.stringify({ resumeText }),
-      });
-      const data = await reviewRes.json();
-
-      if (!reviewRes.ok) {
-        if (reviewRes.status === 429) throw new Error("Too many review requests. Please wait.");
-        if (reviewRes.status === 503) throw new Error("AI service temporarily unavailable.");
-        throw new Error(data.error ?? "Review failed.");
-      }
-
-      const reviewId = crypto.randomUUID();
-      sessionStorage.setItem(`review:${reviewId}`, JSON.stringify({
-        ...data,
-        fileName:         resume.fileName,
-        reviewedAt:       new Date().toISOString(),
-        uploadedResumeId: resume.id,
-      }));
-
-      onReviewDone(resume.id, data.overallScore);
-      router.push(`/review/${reviewId}`);
-
-    } catch (err: unknown) {
-      toast.error((err as Error).message);
-    } finally {
-      setReviewing(false);
-      setReviewStep("");
+    let resumeText = "";
+    if (resume.fileType === "pdf") {
+      resumeText = await extractPDF(arrayBuffer);
+    } else {
+      resumeText = await extractDOCX(arrayBuffer);
     }
+
+    if (!resumeText || resumeText.length < 50) {
+      throw new Error("Could not extract enough text. Make sure it is not a scanned image PDF.");
+    }
+    if (resumeText.length > 15000) resumeText = resumeText.slice(0, 15000);
+
+    setReviewStep("Analysing with AI…");
+    const reviewRes = await fetch("/api/ai/review-resume", {
+      method: "POST",
+      headers: {
+        "Content-Type":         "application/json",
+        Authorization:          `Bearer ${token}`,
+        "x-uploaded-resume-id": resume.id,
+      },
+      body: JSON.stringify({ resumeText }),
+    });
+    const data = await reviewRes.json();
+
+    if (!reviewRes.ok) {
+      if (reviewRes.status === 429) throw new Error("Too many review requests. Please wait.");
+      if (reviewRes.status === 503) throw new Error("AI service temporarily unavailable.");
+      throw new Error(data.error ?? "Review failed.");
+    }
+
+    const reviewId = crypto.randomUUID();
+    sessionStorage.setItem(`review:${reviewId}`, JSON.stringify({
+      ...data,
+      fileName:         resume.fileName,
+      reviewedAt:       new Date().toISOString(),
+      uploadedResumeId: resume.id,
+    }));
+
+    onReviewDone(resume.id, data.overallScore);
+    router.push(`/review/${reviewId}`);
+
+  } catch (err: unknown) {
+    toast.error((err as Error).message);
+  } finally {
+    setReviewing(false);
+    setReviewStep("");
   }
+}
 
   const shortName = resume.fileName.length > 26
     ? resume.fileName.slice(0, 23) + "…"
