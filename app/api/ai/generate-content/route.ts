@@ -58,15 +58,17 @@ export async function POST(request: Request) {
 
     // ── 3. Load user profile ─────────────────────────────────
     const profile        = await getUserProfile(uid);
-    const isPremium      = profile?.isPremium       ?? false;
-    const builderCredits = profile?.credits?.builder ?? 0;
+    let resumeUnlocks  = profile?.credits?.resumeUnlocks ?? (profile?.credits as any)?.builder ?? 0;
+    if (resumeUnlocks === 0 && profile?.isPremium) resumeUnlocks = 1;
+    const unlockedResumes = profile?.unlockedResumes ?? [];
+    const isDocumentUnlocked = context.resumeId ? unlockedResumes.includes(context.resumeId) : false;
 
-    console.info(`[Generate] User ${uid} | type: ${type} | isPremium: ${isPremium} | credits.builder: ${builderCredits} | isPreview: ${isPreview}`);
+    console.info(`[Generate] User ${uid} | type: ${type} | resumeUnlocks: ${resumeUnlocks} | isPreview: ${isPreview} | targetDocId: ${context.resumeId} | isUnlocked: ${isDocumentUnlocked}`);
 
     // ── 4. Free preview path ─────────────────────────────────
-    // Non-premium users get one free preview per section type.
+    // Non-unlocked users get one free preview per section type.
     // Preview flag must be explicitly set by the client.
-    if (isPreview && !isPremium) {
+    if (isPreview && !isDocumentUnlocked) {
       const adminDb         = getAdminDb();
       const userDoc         = await adminDb.collection("users").doc(uid).get();
       const freePreviewsUsed = userDoc.data()?.freePreviewsUsed ?? {};
@@ -95,14 +97,14 @@ export async function POST(request: Request) {
     }
 
     // ── 5. Credit gate ───────────────────────────────────────
-    const hasBuilderCredit = isPremium && builderCredits >= 1;
+    let hasBuilderAccess = isDocumentUnlocked || resumeUnlocks >= 1;
 
-    if (!hasBuilderCredit) {
-      console.info(`[Generate] Blocked — no builder credit | uid: ${uid} | isPremium: ${isPremium} | credits: ${builderCredits}`);
+    if (!hasBuilderAccess) {
+      console.info(`[Generate] Blocked — no resume unlock credit | uid: ${uid} | credits: ${resumeUnlocks}`);
       return NextResponse.json(
         {
           code:  "PREMIUM_REQUIRED",
-          error: "Content generation requires a builder credit. Purchase a plan to unlock.",
+          error: "Content generation requires a resume unlock credit. Purchase a plan to unlock this resume.",
         },
         { status: 402 }
       );
@@ -115,32 +117,37 @@ export async function POST(request: Request) {
     const { content, tokens } = await generateResumeContent(type, context);
     console.info(`[Generate] ✓ Generated for user ${uid} | type: ${type} | tokens: ${tokens}`);
 
-    // ── 8. Consume builder credit (transactional) ────────────
+    // ── 8. Consume unlock credit (transactional) if needed ────────────
     const adminDb = getAdminDb();
     const userRef = adminDb.collection("users").doc(uid);
 
     await adminDb.runTransaction(async (tx) => {
       const snap           = await tx.get(userRef);
-      const currentBuilder = snap.data()?.credits?.builder ?? 0;
-      const currentReview  = snap.data()?.credits?.review  ?? 0;
+      let currentUnlocks = snap.data()?.credits?.resumeUnlocks ?? (snap.data()?.credits as any)?.builder ?? 0;
+      if (currentUnlocks === 0 && snap.data()?.isPremium) currentUnlocks = 1;
       const currentTokens  = snap.data()?.totalTokensUsed  ?? 0;
+      const currentUnlockedResumes = snap.data()?.unlockedResumes ?? [];
 
-      if (currentBuilder < 1) {
-        throw new Error("NO_BUILDER_CREDITS");
+      const docIdToUnlock = context.resumeId;
+
+      if (!isDocumentUnlocked && docIdToUnlock && !currentUnlockedResumes.includes(docIdToUnlock)) {
+        if (currentUnlocks < 1) {
+          throw new Error("NO_RESUME_UNLOCKS");
+        }
+        tx.update(userRef, {
+          "credits.resumeUnlocks": FieldValue.increment(-1),
+          totalTokensUsed:   currentTokens + tokens,
+          lastGenerationAt:  new Date(),
+          unlockedResumes: FieldValue.arrayUnion(docIdToUnlock),
+        });
+        console.info(`[Generate] ✓ Unlocked resume ${docIdToUnlock} and consumed unlock credit for user ${uid}`);
+      } else {
+        tx.update(userRef, {
+          totalTokensUsed:   currentTokens + tokens,
+          lastGenerationAt:  new Date(),
+        });
       }
-
-      const newBuilder   = currentBuilder - 1;
-      const stillPremium = newBuilder > 0 || currentReview > 0;
-
-      tx.update(userRef, {
-        "credits.builder": FieldValue.increment(-1),
-        isPremium:         stillPremium,
-        totalTokensUsed:   currentTokens + tokens,
-        lastGenerationAt:  new Date(),
-      });
     });
-
-    console.info(`[Generate] ✓ Consumed builder credit for user ${uid}`);
 
     return NextResponse.json({ content, preview: false, tokensUsed: tokens });
 
@@ -157,9 +164,9 @@ export async function POST(request: Request) {
         { status: 429 }
       );
 
-    if (error.message === "NO_BUILDER_CREDITS")
+    if (error.message === "NO_RESUME_UNLOCKS")
       return NextResponse.json(
-        { code: "PREMIUM_REQUIRED", error: "No builder credits remaining. Purchase a plan to continue." },
+        { code: "PREMIUM_REQUIRED", error: "No unlock credits remaining. Purchase a plan to continue." },
         { status: 402 }
       );
 

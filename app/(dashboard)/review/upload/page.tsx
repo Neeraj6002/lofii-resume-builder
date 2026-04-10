@@ -346,7 +346,7 @@ function ReviewUploadForm(): ReactElement {
 
       <div className="review-page">
         <header className="topbar">
-          <Link href="/" className="topbar-logo">Resu<span>MAI</span></Link>
+          <Link href="/" className="topbar-logo">Resu<span>fii</span></Link>
           <Link href="/dashboard" className="back-link">
             <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
               <path d="M9 11L5 7l4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
@@ -478,8 +478,8 @@ function ReviewUploadForm(): ReactElement {
                 </svg>
                 <p className="free-note-text">
                   <strong>Free plan:</strong> you&apos;ll see your overall ATS score and 2 section previews.{" "}
-                  <Link href="/dashboard" style={{ color: "var(--gold)", fontWeight: 500 }}>Upgrade to Premium</Link>
-                  {" "}to unlock all 8 categories and every actionable fix.
+                  <Link href="/dashboard" style={{ color: "var(--gold)", fontWeight: 500 }}>Purchase a lifetime unlock</Link>
+                  {" "}to unlock all 8 categories and every actionable fix for this document.
                 </p>
               </div>
             )}

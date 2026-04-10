@@ -22,16 +22,20 @@ export async function GET(request: Request) {
       // User authed but no Firestore doc yet — return safe defaults
       return NextResponse.json({
         isPremium: false,
-        credits:   { review: 0, builder: 0 },
+        credits:   { resumeUnlocks: 0 },
+        unlockedResumes: [],
       });
     }
+
+    let resumeUnlocks = profile.credits?.resumeUnlocks ?? (profile.credits as any)?.builder ?? 0;
+    if (resumeUnlocks === 0 && profile.isPremium) resumeUnlocks = 1;
 
     return NextResponse.json({
       isPremium: profile.isPremium ?? false,
       credits: {
-        review:  profile.credits?.review  ?? 0,
-        builder: profile.credits?.builder ?? 0,
+        resumeUnlocks,
       },
+      unlockedResumes: profile.unlockedResumes ?? [],
     });
 
   } catch (err) {

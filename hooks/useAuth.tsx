@@ -42,19 +42,20 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
-// ─── Fetch isPremium from Firestore via server API ────────────
-// We never trust the JWT claim for isPremium because the webhook
-// only writes to Firestore — Admin SDK custom claims are not used.
-async function fetchIsPremium(idToken: string): Promise<boolean> {
+async function fetchUserData(idToken: string): Promise<{ isPremium: boolean, credits: { resumeUnlocks: number }, unlockedResumes: string[] }> {
   try {
     const res = await fetch("/api/auth/me", {
       headers: { Authorization: `Bearer ${idToken}` },
     });
-    if (!res.ok) return false;
-    const data = await res.json() as { isPremium?: boolean };
-    return data.isPremium ?? false;
+    if (!res.ok) return { isPremium: false, credits: { resumeUnlocks: 0 }, unlockedResumes: [] };
+    const data = await res.json();
+    return {
+      isPremium: data.isPremium ?? false,
+      credits: data.credits ?? { resumeUnlocks: 0 },
+      unlockedResumes: data.unlockedResumes ?? [],
+    };
   } catch {
-    return false;
+    return { isPremium: false, credits: { resumeUnlocks: 0 }, unlockedResumes: [] };
   }
 }
 
@@ -62,18 +63,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user,    setUser]    = useState<AuthUser | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // Build AuthUser — gets fresh idToken and reads isPremium from Firestore
+  // Build AuthUser — gets fresh idToken and reads profile data from Firestore
   const buildAuthUser = useCallback(async (firebaseUser: User): Promise<AuthUser> => {
     const idToken   = await firebaseUser.getIdToken();
-    const isPremium = await fetchIsPremium(idToken);
+    const userData = await fetchUserData(idToken);
 
     return {
       uid:         firebaseUser.uid,
       email:       firebaseUser.email,
       displayName: firebaseUser.displayName,
       photoURL:    firebaseUser.photoURL,
-      isPremium,
+      isPremium:   userData.isPremium,
       idToken,
+      credits:     userData.credits,
+      unlockedResumes: userData.unlockedResumes,
     };
   }, []);
 

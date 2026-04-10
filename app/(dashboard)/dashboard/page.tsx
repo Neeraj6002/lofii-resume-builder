@@ -52,7 +52,7 @@ function templateLabel(t: string): string {
 }
 
 // ─── Resume data → plain text converter ──────────────────────
-// Used so "Built with ResuMAI" cards can be reviewed without re-uploading a file
+// Used so "Built with Resufii" cards can be reviewed without re-uploading a file
 
 function resumeDataToText(resume: Record<string, unknown>): string {
   const lines: string[] = [];
@@ -183,7 +183,7 @@ function ScoreRing({ score }: { score: number }) {
 
 function PremiumStar() {
   return (
-    <div className="premium-star" title="AI-reviewed">
+    <div className="premium-star" title="Premium Access Unlocked">
       <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
         <path
           d="M6 1l1.35 2.73 3.01.44-2.18 2.12.51 3-2.69-1.42L3.31 9.29l.51-3L1.64 4.17l3.01-.44z"
@@ -290,7 +290,7 @@ function ResumeCardItem({ resume, onDelete, onReviewDone }: {
 
   return (
     <div className="resume-card">
-      {resume.lastReviewScore !== null && <PremiumStar />}
+      {user?.unlockedResumes?.includes(resume.id) && <PremiumStar />}
       {resume.lastReviewScore !== null && <ScoreRing score={resume.lastReviewScore} />}
       <div className="resume-template-tag badge badge-muted">{templateLabel(resume.template)}</div>
       <div className="resume-preview">
@@ -448,7 +448,7 @@ function UploadedResumeCardItem({
 
   return (
     <div className="resume-card uploaded-card">
-      {resume.lastReviewScore !== null && <PremiumStar />}
+      {user?.unlockedResumes?.includes(resume.id) && <PremiumStar />}
       {resume.lastReviewScore !== null && <ScoreRing score={resume.lastReviewScore} />}
 
       <div className="resume-template-tag badge badge-muted" style={{ display: "flex", alignItems: "center", gap: 4 }}>
@@ -716,7 +716,7 @@ function DashboardContent() {
 
       <div className="dash-layout">
         <header className="topbar">
-          <Link href="/dashboard" className="topbar-logo">Resu<span>MAI</span></Link>
+          <Link href="/dashboard" className="topbar-logo">Resu<span>fii</span></Link>
           <div className="topbar-right">
             {user?.isPremium && <div className="premium-pill">✦ Premium</div>}
             <div className="avatar-wrap">
@@ -820,7 +820,7 @@ function DashboardContent() {
               {resumes.length > 0 && (
                 <>
                   {uploadedResumes.length > 0 && (
-                    <div className="section-label">Built with ResuMAI</div>
+                    <div className="section-label">Built with Resufii</div>
                   )}
                   <div className="resume-grid">
                     {resumes.map((r, i) => (

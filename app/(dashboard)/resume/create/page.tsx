@@ -194,6 +194,7 @@ export default function CreateResumePage() {
         <div className="builder-body">
           <div className="form-panel">
             <ResumeForm
+              resumeId=""
               personal={personal}
               summary={summary}
               experience={experience}

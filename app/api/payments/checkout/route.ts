@@ -16,17 +16,9 @@ export async function POST(request: Request) {
     const decoded = await verifyAuthToken(authHeader);
     const uid = decoded.uid;
 
-    // ── 2. Check if already premium ────────────────────────
-    // Prevent double payment — no point creating a link for existing premium
+
+
     const profile = await getUserProfile(uid);
-
-    if (profile?.isPremium) {
-      return NextResponse.json(
-        { error: "You already have a premium account." },
-        { status: 400 }
-      );
-    }
-
     // ── 3. Create payment link ──────────────────────────────
     const paymentUrl = await createLifetimePaymentLink(
       profile?.email ?? decoded.email ?? "",

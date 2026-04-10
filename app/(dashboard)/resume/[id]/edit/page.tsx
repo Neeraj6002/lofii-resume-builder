@@ -394,13 +394,22 @@ export default function EditResumePage({
             </Link>
             <span className="edit-badge">Editing</span>
             {!fetching && (
-              <input
-                className="title-input"
-                value={title}
-                onChange={e => setTitle(e.target.value)}
-                maxLength={60}
-                aria-label="Resume title"
-              />
+              <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
+                {user?.unlockedResumes?.includes(resumeId || "") && (
+                  <div title="Premium Resume" style={{ color: "var(--gold)", display: "flex", alignItems: "center" }}>
+                    <svg width="14" height="14" viewBox="0 0 12 12" fill="none">
+                      <path d="M6 1l1.35 2.73 3.01.44-2.18 2.12.51 3-2.69-1.42L3.31 9.29l.51-3L1.64 4.17l3.01-.44z" fill="currentColor" stroke="currentColor" strokeWidth="0.5" strokeLinejoin="round"/>
+                    </svg>
+                  </div>
+                )}
+                <input
+                  className="title-input"
+                  value={title}
+                  onChange={e => setTitle(e.target.value)}
+                  maxLength={60}
+                  aria-label="Resume title"
+                />
+              </div>
             )}
           </div>
 
@@ -460,6 +469,7 @@ export default function EditResumePage({
           <div className="builder-body">
             <div className="form-panel">
               <ResumeForm
+                resumeId={resumeId || ""}
                 personal={personal}
                 summary={summary}
                 experience={experience}

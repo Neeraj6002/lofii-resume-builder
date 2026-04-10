@@ -283,7 +283,7 @@ export default function RegisterPage() {
         <div className="auth-card">
 
           {/* Logo */}
-          <Link href="/" className="auth-logo">Resu<span>MAI</span></Link>
+          <Link href="/" className="auth-logo">Resu<span>fii</span></Link>
 
           {/* Heading */}
           <h1 className="auth-heading">Create your account</h1>

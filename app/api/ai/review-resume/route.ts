@@ -1,15 +1,4 @@
 // app/api/ai/review-resume/route.ts
-// ============================================================
-// RESUME REVIEW API
-//
-// Free users:  overallScore + first 2 sections visible, rest blurred
-// Paid users:  full report, 1 review credit consumed
-//
-// Credit gate logic:
-//   hasReviewCredit = isPremium === true AND credits.review >= 1
-//   If hasReviewCredit → full report + deduct credit
-//   Else              → gated report (score + 2 sections shown)
-// ============================================================
 
 import { NextResponse }                    from "next/server";
 import { verifyAuthToken, getUserProfile } from "@/lib/firebase/auth";
@@ -18,6 +7,8 @@ import { ReviewRequestSchema }             from "@/lib/schemas";
 import { checkRateLimit, reviewRateLimit } from "@/lib/ratelimit";
 import { getAdminDb }                      from "@/lib/firebase/admin";
 import { FieldValue }                      from "firebase-admin/firestore";
+import type { ReviewSection }              from "@/types";
+
 
 export async function POST(request: Request) {
   try {
@@ -44,22 +35,33 @@ export async function POST(request: Request) {
 
     // ── 4. Load user profile ─────────────────────────────────
     const profile       = await getUserProfile(uid);
-    const isPremium     = profile?.isPremium     ?? false;
-    const reviewCredits = profile?.credits?.review ?? 0;
+    let resumeUnlocks = profile?.credits?.resumeUnlocks ?? (profile?.credits as any)?.builder ?? 0;
+    if (resumeUnlocks === 0 && profile?.isPremium) resumeUnlocks = 1;
+    const unlockedResumes = profile?.unlockedResumes ?? [];
+    
+    // Identify the resume being reviewed
+    const resumeId = request.headers.get("x-resume-id");
+    const uploadedResumeId = request.headers.get("x-uploaded-resume-id");
+    const targetDocId = resumeId || uploadedResumeId;
 
-    console.info(`[Review] User ${uid} | isPremium: ${isPremium} | credits.review: ${reviewCredits}`);
+    let isDocumentUnlocked = false;
+    if (targetDocId && unlockedResumes.includes(targetDocId)) {
+      isDocumentUnlocked = true;
+    }
+
+    console.info(`[Review] User ${uid} | resumeUnlocks: ${resumeUnlocks} | targetDocId: ${targetDocId} | isUnlocked: ${isDocumentUnlocked}`);
 
     // ── 5. Run AI review ─────────────────────────────────────
     const review = await reviewResume(resumeText);
 
     // ── 6. Gate response ─────────────────────────────────────
-    const hasReviewCredit = isPremium && reviewCredits >= 1;
+    let hasReviewAccess = isDocumentUnlocked || resumeUnlocks >= 1;
 
     const gatedReview = {
       overallScore: review.overallScore,
-      isPremium:    hasReviewCredit,
-      sections: review.sections.map((section, i) => {
-        if (!hasReviewCredit && i >= 2) {
+      isPremium:    hasReviewAccess,
+      sections: review.sections.map((section: ReviewSection, i: number) => {
+        if (!hasReviewAccess && i >= 2) {
           return {
             category:  section.category,
             label:     section.label,
@@ -70,7 +72,7 @@ export async function POST(request: Request) {
         }
         return { ...section, isPremium: i >= 2 };
       }),
-      topFixes: hasReviewCredit
+      topFixes: hasReviewAccess
         ? review.topFixes
         : review.topFixes.map(() => ({
             severity: "suggestion" as const,
@@ -79,54 +81,66 @@ export async function POST(request: Request) {
           })),
     };
 
-    // ── 7. Consume review credit (transactional) ─────────────
-    if (hasReviewCredit) {
-      const adminDb = getAdminDb();
-      const userRef = adminDb.collection("users").doc(uid);
+    // ── 7. Unlock Resume (transactional) ─────────────────────
+    // If they have access but the doc isn't unlocked yet, unlock it!
+    if (hasReviewAccess && !isDocumentUnlocked && targetDocId) {
+      try {
+        const adminDb = getAdminDb();
+        const userRef = adminDb.collection("users").doc(uid);
 
-      await adminDb.runTransaction(async (tx) => {
-        const snap           = await tx.get(userRef);
-        const currentReview  = snap.data()?.credits?.review  ?? 0;
-        const currentBuilder = snap.data()?.credits?.builder ?? 0;
+        await adminDb.runTransaction(async (tx) => {
+          const snap = await tx.get(userRef);
+          let currentResumeUnlocks = snap.data()?.credits?.resumeUnlocks ?? (snap.data()?.credits as any)?.builder ?? 0;
+          if (currentResumeUnlocks === 0 && snap.data()?.isPremium) currentResumeUnlocks = 1;
+          const currentUnlockedResumes = snap.data()?.unlockedResumes ?? [];
 
-        if (currentReview < 1) throw new Error("NO_REVIEW_CREDITS");
+          if (currentResumeUnlocks < 1) throw new Error("NO_RESUME_UNLOCKS");
+          if (currentUnlockedResumes.includes(targetDocId)) return;
 
-        const newReview    = currentReview - 1;
-        const stillPremium = newReview > 0 || currentBuilder > 0;
-
-        tx.update(userRef, {
-          "credits.review": FieldValue.increment(-1),
-          isPremium:        stillPremium,
+          tx.update(userRef, {
+            "credits.resumeUnlocks": FieldValue.increment(-1),
+            unlockedResumes: FieldValue.arrayUnion(targetDocId),
+          });
         });
-      });
 
-      console.info(`[Review] ✓ Consumed review credit for user ${uid}`);
+        console.info(`[Review] ✓ Unlocked resume ${targetDocId} for user ${uid}`);
+      } catch (txErr) {
+        const txError = txErr as Error;
+        if (txError.message === "NO_RESUME_UNLOCKS") throw txError;
+        console.error("[Review] Transaction error (non-fatal):", txError);
+      }
     }
 
     // ── 8. Update score on built resume (if x-resume-id header) ──
-    const resumeId = request.headers.get("x-resume-id");
     if (resumeId) {
-      const adminDb   = getAdminDb();
-      const resumeDoc = await adminDb.collection("resumes").doc(resumeId).get();
+      try {
+        const adminDb   = getAdminDb();
+        const resumeDoc = await adminDb.collection("resumes").doc(resumeId).get();
 
-      if (resumeDoc.exists && resumeDoc.data()?.userId === uid) {
-        await adminDb.collection("resumes").doc(resumeId).update({
-          lastReviewScore: review.overallScore,
-          updatedAt:       new Date(),
-        });
+        if (resumeDoc.exists && resumeDoc.data()?.userId === uid) {
+          await adminDb.collection("resumes").doc(resumeId).update({
+            lastReviewScore: review.overallScore,
+            updatedAt:       new Date(),
+          });
+        }
+      } catch (resumeErr) {
+        console.error("[Review] Failed to update resume score:", resumeErr);
       }
     }
 
     // ── 9. Update score on uploaded resume (if x-uploaded-resume-id header) ──
-    const uploadedResumeId = request.headers.get("x-uploaded-resume-id");
     if (uploadedResumeId) {
-      const adminDb       = getAdminDb();
-      const uploadedDoc   = await adminDb.collection("uploadedResumes").doc(uploadedResumeId).get();
+      try {
+        const adminDb     = getAdminDb();
+        const uploadedDoc = await adminDb.collection("uploadedResumes").doc(uploadedResumeId).get();
 
-      if (uploadedDoc.exists && uploadedDoc.data()?.userId === uid) {
-        await adminDb.collection("uploadedResumes").doc(uploadedResumeId).update({
-          lastReviewScore: review.overallScore,
-        });
+        if (uploadedDoc.exists && uploadedDoc.data()?.userId === uid) {
+          await adminDb.collection("uploadedResumes").doc(uploadedResumeId).update({
+            lastReviewScore: review.overallScore,
+          });
+        }
+      } catch (uploadErr) {
+        console.error("[Review] Failed to update uploaded resume score:", uploadErr);
       }
     }
 
@@ -145,9 +159,9 @@ export async function POST(request: Request) {
         { status: 429 }
       );
 
-    if (error.message === "NO_REVIEW_CREDITS")
+    if (error.message === "NO_RESUME_UNLOCKS")
       return NextResponse.json(
-        { code: "PREMIUM_REQUIRED", error: "No review credits remaining. Purchase a plan to continue." },
+        { code: "PREMIUM_REQUIRED", error: "No unlock credits remaining. Purchase a plan to continue." },
         { status: 402 }
       );
 

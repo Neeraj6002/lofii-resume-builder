@@ -192,7 +192,7 @@ export default function PricingPage() {
 
         {/* Nav */}
         <nav className="pricing-nav">
-          <Link href="/" className="nav-logo">Resu<span>MAI</span></Link>
+          <Link href="/" className="nav-logo">Resu<span>fii</span></Link>
           <div style={{ display: "flex", alignItems: "center", gap: "var(--space-4)" }}>
             {user ? (
               <Link href="/dashboard" className="btn btn-secondary btn-sm">Dashboard</Link>

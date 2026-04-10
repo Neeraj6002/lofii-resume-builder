@@ -6,7 +6,6 @@
 // - Shows overall ATS score ring + gradient bar
 // - Left: score + top fixes list (premium gated)
 // - Right: section breakdown cards (premium gated)
-// - Matches the layout from the reference screenshot
 // ============================================================
 
 import { useEffect, useState } from "react";
@@ -115,7 +114,11 @@ function SectionRow({
   onUpgrade: () => void;
 }) {
   const [open, setOpen] = useState(false);
-  const locked = section.isPremium && !isPremium;
+
+  // FIX: default section.isPremium to false if undefined
+  // so sections are never incorrectly locked for premium users
+  const sectionRequiresPremium = section.isPremium ?? false;
+  const locked = sectionRequiresPremium && !isPremium;
 
   const color =
     section.score >= 75 ? "var(--success)" :
@@ -137,12 +140,12 @@ function SectionRow({
     <div className={`section-row${open && !locked ? " open" : ""}${locked ? " locked" : ""}`}>
       <div
         className="section-row-header"
-        onClick={() => locked ? onUpgrade() : setOpen(v => !v)}
+        onClick={() => setOpen(v => !v)}
         role="button"
         tabIndex={0}
-        onKeyDown={e => e.key === "Enter" && (locked ? onUpgrade() : setOpen(v => !v))}
+        onKeyDown={e => e.key === "Enter" && setOpen(v => !v)}
       >
-        {/* Lock icon */}
+        {/* Lock icon — shown only when actually locked */}
         {locked && (
           <svg className="lock-icon" width="13" height="13" viewBox="0 0 13 13" fill="none">
             <rect x="2" y="5.5" width="9" height="6.5" rx="1.5" stroke="currentColor" strokeWidth="1.2"/>
@@ -159,7 +162,10 @@ function SectionRow({
           <div className="mini-bar-track">
             <div
               className="mini-bar-fill"
-              style={{ width: locked ? "0%" : `${section.score}%`, background: color }}
+              style={{
+                width: locked ? "0%" : `${section.score}%`,
+                background: color,
+              }}
             />
           </div>
         </div>
@@ -169,7 +175,7 @@ function SectionRow({
           {locked ? "—" : section.score}
         </span>
 
-        {/* Chevron */}
+        {/* Chevron — always shown for unlocked rows */}
         {!locked && (
           <svg
             width="14" height="14" viewBox="0 0 14 14" fill="none"
@@ -179,40 +185,65 @@ function SectionRow({
           </svg>
         )}
 
-        {/* Upgrade CTA for locked */}
+        {/* Upgrade CTA for locked rows */}
         {locked && (
           <span className="unlock-cta">Unlock →</span>
         )}
       </div>
 
-      {/* Issues dropdown */}
-      {open && !locked && section.issues.length > 0 && (
+      {/* ── Expanded content ── */}
+      {open && (
         <div className="section-issues">
-          {section.issues.map((issue, i) => (
-            <div key={i} className={`issue-item issue-${issue.severity}`}>
-              <div className="issue-header">
-                <span className={`issue-badge badge-${issue.severity}`}>
-                  {issue.severity === "critical" ? "Critical" :
-                   issue.severity === "warning"  ? "Warning"  : "Tip"}
-                </span>
-                <span className="issue-msg">{issue.message}</span>
-              </div>
-              <div className="issue-fix">
-                <svg width="12" height="12" viewBox="0 0 12 12" fill="none" style={{ flexShrink: 0, marginTop: 2 }}>
-                  <path d="M2 6h8M6 2l4 4-4 4" stroke="var(--gold)" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
-                </svg>
-                {issue.fix}
+
+          {/* FIX 1: Non-premium user opened a locked section → show upgrade prompt */}
+          {locked ? (
+            <div className="section-upgrade-prompt">
+              <svg width="15" height="15" viewBox="0 0 15 15" fill="none" style={{ flexShrink: 0, color: "var(--gold)" }}>
+                <rect x="2" y="7" width="11" height="7.5" rx="1.5" stroke="currentColor" strokeWidth="1.2"/>
+                <path d="M5 7V5a2.5 2.5 0 015 0v2" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
+              </svg>
+              <div>
+                <p className="upgrade-prompt-title">Premium feature</p>
+                <p className="upgrade-prompt-body">
+                  Upgrade to see all issues and fixes for this section.
+                </p>
+                <button
+                  className="btn btn-primary btn-sm"
+                  style={{ marginTop: "var(--space-3)" }}
+                  onClick={e => { e.stopPropagation(); onUpgrade(); }}
+                >
+                  Unlock Full Report →
+                </button>
               </div>
             </div>
-          ))}
-        </div>
-      )}
 
-      {open && !locked && section.issues.length === 0 && (
-        <div className="section-issues">
-          <p style={{ fontSize: "var(--text-sm)", color: "var(--success)", padding: "var(--space-3) 0" }}>
-            ✓ No issues found in this section.
-          </p>
+          ) : section.issues.length === 0 ? (
+            /* FIX 2: Premium user, section has no issues */
+            <p style={{ fontSize: "var(--text-sm)", color: "var(--success)", padding: "var(--space-3) 0" }}>
+              ✓ No issues found in this section.
+            </p>
+
+          ) : (
+            /* FIX 3: Premium user, show all issues */
+            section.issues.map((issue, i) => (
+              <div key={i} className={`issue-item issue-${issue.severity}`}>
+                <div className="issue-header">
+                  <span className={`issue-badge badge-${issue.severity}`}>
+                    {issue.severity === "critical" ? "Critical" :
+                     issue.severity === "warning"  ? "Warning"  : "Tip"}
+                  </span>
+                  <span className="issue-msg">{issue.message}</span>
+                </div>
+                <div className="issue-fix">
+                  <svg width="12" height="12" viewBox="0 0 12 12" fill="none" style={{ flexShrink: 0, marginTop: 2 }}>
+                    <path d="M2 6h8M6 2l4 4-4 4" stroke="var(--gold)" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>
+                  {issue.fix}
+                </div>
+              </div>
+            ))
+          )}
+
         </div>
       )}
     </div>
@@ -333,9 +364,9 @@ export default function ReviewResultsPage({
     );
   }
 
-  const isPremium = user?.isPremium ?? false;
-  const userName  = user?.displayName?.split(" ")[0] ?? "there";
-  const lockedCount = data.sections.filter(s => s.isPremium && !isPremium).length;
+  const isPremium   = data.isPremium || (data.resumeId ? (user?.unlockedResumes?.includes(data.resumeId) ?? false) : false);
+  const userName    = user?.displayName?.split(" ")[0] ?? "there";
+  const lockedCount = data.sections.filter(s => (s.isPremium ?? false) && !isPremium).length;
 
   return (
     <>
@@ -483,7 +514,7 @@ export default function ReviewResultsPage({
         .unlock-cta { font-size: var(--text-xs); color: var(--gold); font-weight: 600; white-space: nowrap; }
 
         /* Issues */
-        .section-issues { padding: 0 var(--space-5) var(--space-4); }
+        .section-issues { padding: var(--space-3) var(--space-5) var(--space-4); }
         .issue-item {
           padding: var(--space-3); border-radius: var(--radius-md);
           margin-bottom: var(--space-2); border: 1px solid var(--border);
@@ -496,11 +527,26 @@ export default function ReviewResultsPage({
           border-radius: 99px; white-space: nowrap; flex-shrink: 0;
           text-transform: uppercase; letter-spacing: 0.05em;
         }
-        .badge-critical { background: var(--error-dim);   color: var(--error);   border: 1px solid rgba(248,113,113,0.2); }
-        .badge-warning  { background: var(--warning-dim); color: var(--warning); border: 1px solid rgba(251,191,36,0.2);  }
-        .badge-suggestion { background: var(--info-dim);  color: var(--info);    border: 1px solid rgba(96,165,250,0.2);  }
+        .badge-critical   { background: var(--error-dim);   color: var(--error);   border: 1px solid rgba(248,113,113,0.2); }
+        .badge-warning    { background: var(--warning-dim); color: var(--warning); border: 1px solid rgba(251,191,36,0.2);  }
+        .badge-suggestion { background: var(--info-dim);    color: var(--info);    border: 1px solid rgba(96,165,250,0.2);  }
         .issue-msg { font-size: var(--text-sm); color: var(--text-primary); font-weight: 500; line-height: 1.4; }
         .issue-fix { font-size: var(--text-xs); color: var(--text-secondary); display: flex; align-items: flex-start; gap: var(--space-1); line-height: 1.55; }
+
+        /* ── Upgrade prompt inside section (non-premium) ── */
+        .section-upgrade-prompt {
+          display: flex; align-items: flex-start; gap: var(--space-3);
+          padding: var(--space-4);
+          background: linear-gradient(135deg, var(--bg-base), rgba(201,168,76,.04));
+          border: 1px solid var(--gold-border); border-radius: var(--radius-md);
+        }
+        .upgrade-prompt-title {
+          font-size: var(--text-sm); font-weight: 600;
+          color: var(--gold-light); margin-bottom: var(--space-1);
+        }
+        .upgrade-prompt-body {
+          font-size: var(--text-xs); color: var(--text-secondary); line-height: 1.6;
+        }
 
         /* ── Score improvement tip ── */
         .improve-tip {
@@ -526,7 +572,7 @@ export default function ReviewResultsPage({
 
         {/* ── Topbar ─────────────────────────────────────── */}
         <header className="topbar">
-          <Link href="/" className="topbar-logo">Resu<span>MAI</span></Link>
+          <Link href="/" className="topbar-logo">Resu<span>fii</span></Link>
           <div className="topbar-right">
             <Link href="/review/upload" className="btn btn-secondary btn-sm">
               <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
@@ -603,7 +649,7 @@ export default function ReviewResultsPage({
                   onClick={handleUpgrade}
                   disabled={upgrading}
                 >
-                  {upgrading ? "" : "Unlock Full Report — $2 →"}
+                  {upgrading ? "" : "Unlock Full Report — ₹999 →"}
                 </button>
                 <p style={{ fontSize: "var(--text-xs)", color: "var(--text-disabled)", marginTop: "var(--space-3)" }}>
                   One-time payment · Lifetime access · No subscription
@@ -645,7 +691,7 @@ export default function ReviewResultsPage({
                 <span style={{ fontSize: "var(--text-xs)", color: "var(--text-secondary)" }}>
                   {isPremium
                     ? `${data.sections.length} categories`
-                    : `${data.sections.filter(s => !s.isPremium).length} of ${data.sections.length} visible`}
+                    : `${data.sections.filter(s => !(s.isPremium ?? false)).length} of ${data.sections.length} visible`}
                 </span>
               </div>
 

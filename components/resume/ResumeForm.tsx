@@ -24,6 +24,7 @@ const SECTIONS: { id: Section; label: string }[] = [
 ];
 
 interface Props {
+  resumeId:    string;
   personal:    PersonalInfo;
   summary:     string;
   experience:  ExperienceItem[];
@@ -262,7 +263,7 @@ function downloadResumeAsPDF() {
 
 // ─── Main component ───────────────────────────────────────────
 export default function ResumeForm({
-  personal, summary, experience, education, skills, projects, certs,
+  resumeId, personal, summary, experience, education, skills, projects, certs,
   onPersonalChange, onSummaryChange, onExpChange, onEduChange,
   onSkillsChange, onProjectsChange, onCertsChange,
 }: Props) {
@@ -678,6 +679,7 @@ export default function ResumeForm({
       {/* AI Modal */}
       {aiModal && (
         <AIGenerateModal
+          resumeId={resumeId}
           type={aiModal.type}
           prefill={aiModal.prefill}
           onInsert={aiModal.onInsert}

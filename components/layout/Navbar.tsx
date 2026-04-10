@@ -172,7 +172,7 @@ export default function Navbar() {
       <header className="navbar">
         <div className="navbar-left">
           <Link href="/dashboard" className="navbar-logo">
-            Resu<span>MAI</span>
+            Resu<span>fii</span>
           </Link>
           <nav className="navbar-links">
             {navLinks.map((l) => (

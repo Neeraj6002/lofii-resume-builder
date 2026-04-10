@@ -15,6 +15,7 @@ import type { AIContentType } from "@/types";
 interface Props {
   type:       AIContentType;
   prefill?:   Record<string, string>; // pre-fill context from existing form data
+  resumeId:   string;
   onInsert:   (content: string) => void;
   onClose:    () => void;
 }
@@ -59,9 +60,10 @@ const TYPE_LABELS: Record<AIContentType, string> = {
   project:    "Project Description",
 };
 
-export default function AIGenerateModal({ type, prefill = {}, onInsert, onClose }: Props) {
+export default function AIGenerateModal({ type, prefill = {}, resumeId, onInsert, onClose }: Props) {
   const { user, getIdToken } = useAuth();
-  const isPremium = user?.isPremium ?? false;
+  const isDocumentUnlocked = user?.unlockedResumes?.includes(resumeId) ?? false;
+  const hasUnlocks = (user?.credits?.resumeUnlocks ?? 0) > 0;
 
   const fields = FIELDS[type];
 
@@ -99,7 +101,8 @@ export default function AIGenerateModal({ type, prefill = {}, onInsert, onClose 
           type,
           context: {
             ...context,
-            __preview: isPremium ? "false" : "true",
+            resumeId,
+            __preview: (!isDocumentUnlocked && !hasUnlocks) ? "true" : "false",
           },
         }),
       });
@@ -247,13 +250,18 @@ export default function AIGenerateModal({ type, prefill = {}, onInsert, onClose 
 
           <div className="modal-body">
             {/* Free notice */}
-            {!isPremium && (
+            {!isDocumentUnlocked && !hasUnlocks && (
               <div className="free-notice">
                 <svg width="14" height="14" viewBox="0 0 14 14" fill="none" style={{ flexShrink: 0, marginTop: 1 }}>
                   <circle cx="7" cy="7" r="5.5" stroke="currentColor" strokeWidth="1.1"/>
                   <path d="M7 6.5v3M7 4.5h.01" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round"/>
                 </svg>
-                Free preview — you&apos;ll get 1 bullet point. Upgrade to Premium for full generation.
+                Free preview — you&apos;ll get 1 bullet point. Purchase an unlock token to generate fully.
+              </div>
+            )}
+            {!isDocumentUnlocked && hasUnlocks && (
+              <div className="free-notice" style={{ background: "var(--info-dim)", borderColor: "var(--info)", color: "var(--info)" }}>
+                Generating content will consume 1 unlock token to permanently unlock this resume.
               </div>
             )}
 
@@ -312,7 +320,7 @@ export default function AIGenerateModal({ type, prefill = {}, onInsert, onClose 
                 onClick={handleGenerate}
                 disabled={loading}
               >
-                {loading ? "" : "✦ Generate"}
+                {loading ? "" : (!isDocumentUnlocked && hasUnlocks ? "✦ Unlock & Generate" : "✦ Generate")}
               </button>
             ) : (
               <>
@@ -328,8 +336,8 @@ export default function AIGenerateModal({ type, prefill = {}, onInsert, onClose 
                   </button>
                 )}
                 {isPreview && (
-                  <button className="btn btn-primary btn-sm" onClick={() => alert("Upgrade to Premium to use full AI generation.")}>
-                    Upgrade to Insert →
+                  <button className="btn btn-primary btn-sm" onClick={() => alert("Purchase an unlock token to use full AI generation.")}>
+                    Purchase Unlock →
                   </button>
                 )}
               </>

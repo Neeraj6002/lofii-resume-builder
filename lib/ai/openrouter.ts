@@ -4,7 +4,7 @@
 //
 // Features:
 //  1. Model fallback chain  — tries free models in order
-//  2. Per-model retry       — up to 3 attempts with backoff on 429
+//  2. Per-model retry       — up to 2 attempts with backoff on 429
 //  3. Force strict JSON     — two-message (system+user) prompt
 //  4. Compact schema        — capped response sizes
 //  5. Hardened JSON parsing — 5-stage extraction pipeline
@@ -28,29 +28,36 @@ export interface ReviewResult {
 
 const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions";
 
-/**
- * Model fallback chain — tried in order on 429/404 or empty content.
- *
- * "openrouter/free" is placed first — it auto-selects the best available
- * free model, so it's immune to individual model deprecations.
- * Explicit models follow as deterministic fallbacks.
- */
-const MODELS = [
-  "openrouter/free",  // auto-selects best free model
-  "nvidia/llama-3.1-nemotron-70b-instruct:free",   // long context fallback
+const MODELS = [  
+   "stepfun/step-3.5-flash",
   "qwen/qwen3.6-plus",
-  "stepfun/step-3.5-flash",                    
-  "meta-llama/llama-3.3-70b-instruct:free",        // strong, reliable
-  "qwen/qwen3-14b:free",                           // good instruction following
-  "mistralai/mistral-small-3.1-24b-instruct:free", // solid fallback
-  
+  "meta-llama/llama-3.3-70b-instruct:free",
+  "qwen/qwen3-14b:free",
+  "mistralai/mistral-small-3.1-24b-instruct:free",
+  "nvidia/llama-3.1-nemotron-70b-instruct:free",
+  "openrouter/free",
 ];
 
-const MAX_RETRIES_PER_MODEL = 3;    // attempts per model before trying next
-const RETRY_BASE_DELAY_MS   = 1500; // delay × (attempt + 1) on each retry
+const MAX_RETRIES_PER_MODEL = 2;
+const RETRY_BASE_DELAY_MS   = 800;
+const MAX_SOURCE_CHARS      = 14_000;
 
-/** Max chars we store from any single AI text field — prevents multi-MB strings */
-const MAX_SOURCE_CHARS = 14_000;
+// ─── Premium categories ───────────────────────────────────────
+// These sections are ALWAYS locked for free users.
+// Free users see: score hidden, issues hidden, upgrade prompt.
+// Premium users see: score + full issues list.
+
+const PREMIUM_CATEGORIES = new Set([
+  "keywords",
+  "ats_compatibility",
+  "quantified_impact",
+  "skills",
+  "formatting",
+  "summary",
+]);
+
+// Free categories — visible to everyone (score + issues shown)
+// "action_verbs" and "length" are always free.
 
 // ─── Shared fetch headers ─────────────────────────────────────
 
@@ -65,17 +72,6 @@ function getHeaders(): Record<string, string> {
 
 // ─── Model fallback + retry fetch ────────────────────────────
 
-/**
- * Tries each model in MODELS in order.
- *
- * Moves to the next model when:
- *  - 429 after MAX_RETRIES_PER_MODEL attempts (rate-limited)
- *  - 404 — model deprecated/unavailable
- *  - Response is OK but content is empty (reasoning model burned all tokens)
- *
- * Returns Response once a model produces a non-error response,
- * or throws AI_SERVICE_ERROR:rate_limited after all models are exhausted.
- */
 async function fetchWithFallback(
   buildBody: (model: string) => object
 ): Promise<Response> {
@@ -94,11 +90,10 @@ async function fetchWithFallback(
         throw new Error(`AI_SERVICE_ERROR:network:${(netErr as Error).message}`);
       }
 
-      // 404 — model deprecated or unavailable, skip immediately
       if (res.status === 404) {
         const body = await res.text().catch(() => "");
-        console.warn(`[OpenRouter] "${model}" returned 404 (deprecated/unavailable) — skipping.`, body.slice(0, 200));
-        break; // next model
+        console.warn(`[OpenRouter] "${model}" returned 404 — skipping.`, body.slice(0, 200));
+        break;
       }
 
       if (res.status !== 429) {
@@ -106,12 +101,9 @@ async function fetchWithFallback(
         return res;
       }
 
-      // 429 — decide whether to retry or move on
       if (attempt < MAX_RETRIES_PER_MODEL - 1) {
         const wait = RETRY_BASE_DELAY_MS * (attempt + 1);
-        console.warn(
-          `[OpenRouter] 429 on "${model}" — retry ${attempt + 1}/${MAX_RETRIES_PER_MODEL - 1} in ${wait}ms`
-        );
+        console.warn(`[OpenRouter] 429 on "${model}" — retry ${attempt + 1}/${MAX_RETRIES_PER_MODEL - 1} in ${wait}ms`);
         await new Promise(r => setTimeout(r, wait));
       } else {
         console.warn(`[OpenRouter] "${model}" exhausted all retries — trying next model`);
@@ -154,9 +146,17 @@ function buildReviewUserPrompt(resumeText: string): string {
 - 80-89 : Strong (nearly optimised; recruiter would likely see it)
 - 90-100: Excellent (rare; fully optimised with metrics, keywords, clean format)
 
+### MANDATORY ISSUES RULE — you MUST follow this exactly:
+- Score 0–55   → issues array MUST have at least 2 issues (severity: "critical" or "warning")
+- Score 56–69  → issues array MUST have at least 1 issue (severity: "warning" or "suggestion")
+- Score 70–84  → issues array SHOULD have 1 suggestion if any room for improvement exists
+- Score 85–100 → issues array MAY be empty ONLY if the section is genuinely perfect
+- A low score (below 70) with an EMPTY issues array is INVALID. You must explain WHY the score is low.
+
 ### overallScore calculation:
 Weighted average of section scores using the weights above. Round to nearest integer.
-Do NOT inflate. A typical resume scores 45-65. A score above 75 requires: strong keyword integration, metrics on most bullets, AND clean formatting — all three, not one or two.
+Do NOT inflate. A typical resume scores 45-65. A score above 75 requires: strong keyword integration,
+metrics on most bullets, AND clean formatting — all three, not one or two.
 
 ### JSON schema to return:
 {
@@ -173,10 +173,13 @@ Do NOT inflate. A typical resume scores 45-65. A score above 75 requires: strong
   "topFixes": [{ "severity": "<critical|warning|suggestion>", "message": "<max 120 chars>", "fix": "<max 120 chars>" }]
 }
 
-Rules: exactly 8 sections (one per category), 3-5 topFixes ordered critical first.
+Rules:
+- Exactly 8 sections (one per category above).
+- 3-5 topFixes ordered critical first.
+- NEVER return an empty issues array for any section scoring below 70. This is the most important rule.
 
 RESUME:
-${resumeText.slice(0, 6000)}`;
+${resumeText.slice(0, 4000)}`;
 }
 
 const CONTENT_SYSTEM_PROMPT = `You are an expert resume writer.
@@ -219,13 +222,45 @@ Impact/outcome: ${ctx.impact ?? "N/A"}
 Output ONLY the bullet points, one per line, starting each with "•".`,
 };
 
+// ─── Default issues for low-scoring sections ──────────────────
+
+const DEFAULT_ISSUES: Record<string, { message: string; fix: string }> = {
+  ats_compatibility: {
+    message: "Resume may not be fully parseable by ATS software",
+    fix:     "Use standard section headers and avoid tables, columns, or images",
+  },
+  keywords: {
+    message: "Insufficient job-specific keywords detected",
+    fix:     "Add relevant keywords from the job description to your experience and summary",
+  },
+  quantified_impact: {
+    message: "Few or no quantified achievements found",
+    fix:     "Add numbers, percentages, or metrics to your bullet points",
+  },
+  skills: {
+    message: "Skills section lacks depth or relevance to the target role",
+    fix:     "Add more role-specific hard skills and organise them by category",
+  },
+  action_verbs: {
+    message: "Bullet points lack strong action verbs",
+    fix:     "Start each bullet with a past-tense action verb (Led, Built, Increased, etc.)",
+  },
+  formatting: {
+    message: "Inconsistent formatting detected",
+    fix:     "Standardise punctuation, date formats, capitalisation, and bullet styles throughout",
+  },
+  summary: {
+    message: "Summary is generic or missing key information",
+    fix:     "Tailor the summary to your target role and include one key achievement",
+  },
+  length: {
+    message: "Resume length is not optimal for experience level",
+    fix:     "Aim for 1 page (under 3 years) or 2 pages (3–8 years experience)",
+  },
+};
+
 // ─── JSON extraction helpers ──────────────────────────────────
 
-/**
- * Hardened brace-balanced scanner.
- * Returns the LAST complete JSON block (reasoning models write JSON at end).
- * Falls back to attempting repair on an unclosed trailing block.
- */
 function extractLastJsonBlock(text: string): string | null {
   let lastBlock: string | null = null;
   let i = 0;
@@ -243,13 +278,9 @@ function extractLastJsonBlock(text: string): string | null {
       const ch = text[j];
 
       if (inString) {
-        if (ch === "\\") {
-          j += text[j + 1] === "u" ? 6 : 2;
-          continue;
-        }
+        if (ch === "\\") { j += text[j + 1] === "u" ? 6 : 2; continue; }
         if (ch === '"') inString = false;
-        j++;
-        continue;
+        j++; continue;
       }
 
       if      (ch === '"') { inString = true; j++; continue; }
@@ -257,8 +288,7 @@ function extractLastJsonBlock(text: string): string | null {
       else if (ch === "}") {
         depth--;
         if (depth === 0) { closed = true; break; }
-        j++;
-        continue;
+        j++; continue;
       }
       j++;
     }
@@ -276,7 +306,6 @@ function extractLastJsonBlock(text: string): string | null {
   return lastBlock;
 }
 
-/** Strip markdown code fences the model sometimes wraps JSON in. */
 function stripFences(text: string): string {
   return text
     .replace(/^```(?:json)?\s*/im, "")
@@ -284,9 +313,6 @@ function stripFences(text: string): string {
     .trim();
 }
 
-/**
- * Close unclosed braces/brackets left by token-limit truncation.
- */
 function repairTruncatedJson(raw: string): string {
   let s        = raw.trimEnd().replace(/,\s*$/, "");
   const opens: string[] = [];
@@ -300,9 +326,9 @@ function repairTruncatedJson(raw: string): string {
       if (ch === '"')  inString = false;
       k++; continue;
     }
-    if      (ch === '"')                    inString = true;
-    else if (ch === "{" || ch === "[")      opens.push(ch);
-    else if (ch === "}" || ch === "]")      opens.pop();
+    if      (ch === '"')               inString = true;
+    else if (ch === "{" || ch === "[") opens.push(ch);
+    else if (ch === "}" || ch === "]") opens.pop();
     k++;
   }
 
@@ -313,25 +339,18 @@ function repairTruncatedJson(raw: string): string {
   return s;
 }
 
-/**
- * 5-stage fallback parsing pipeline.
- */
 function extractAndParse(text: string): ReviewResult {
-  // Stage 1: direct parse
   try { return JSON.parse(text) as ReviewResult; } catch { /* next */ }
 
-  // Stage 2: strip fences then parse
   const stripped = stripFences(text);
   try { return JSON.parse(stripped) as ReviewResult; } catch { /* next */ }
 
-  // Stage 3: brace-balanced extraction
   const lastBlock = extractLastJsonBlock(text);
   if (lastBlock) {
     try { return JSON.parse(lastBlock) as ReviewResult; } catch { /* next */ }
     try { return JSON.parse(repairTruncatedJson(lastBlock)) as ReviewResult; } catch { /* next */ }
   }
 
-  // Stage 5: regex candidate search
   const searchText  = text.slice(0, 20_000);
   const jsonPattern = /\{[^{}]{0,8000}"overallScore"[\s\S]{0,8000}\}/g;
   const candidates  = [...searchText.matchAll(jsonPattern)]
@@ -343,10 +362,7 @@ function extractAndParse(text: string): ReviewResult {
     try { return JSON.parse(repairTruncatedJson(candidate)) as ReviewResult; } catch { /* next */ }
   }
 
-  console.error("[OpenRouter] All parse stages failed.", {
-    textLength: text.length,
-    tail: text.slice(-600),
-  });
+  console.error("[OpenRouter] All parse stages failed.", { textLength: text.length, tail: text.slice(-600) });
   throw new Error("AI_PARSE_ERROR");
 }
 
@@ -368,21 +384,42 @@ function validateResult(raw: unknown): ReviewResult {
 
   r.sections = r.sections
     .filter(s => s && typeof s === "object")
-    .map(s => ({
-      category: VALID_CATEGORIES.has(s.category) ? s.category : "ats_compatibility",
-      label:    String(s.label ?? s.category ?? "").slice(0, 40),
-      score:    Math.min(100, Math.max(0, Math.round(Number(s.score) || 0))),
-      issues: Array.isArray(s.issues)
+    .map(s => {
+      const score    = Math.min(100, Math.max(0, Math.round(Number(s.score) || 0)));
+      const category = VALID_CATEGORIES.has(s.category) ? s.category : "ats_compatibility";
+
+      let issues: ReviewIssue[] = Array.isArray(s.issues)
         ? s.issues
             .filter(i => i && typeof i === "object")
             .map(i => ({
-              severity: VALID_SEVERITIES.has(i.severity) ? i.severity : "suggestion",
+              severity: VALID_SEVERITIES.has(i.severity) ? i.severity : "suggestion" as const,
               message:  String(i.message ?? "").slice(0, 150),
               fix:      String(i.fix     ?? "").slice(0, 150),
             }))
-        : [],
-      isPremium: false,
-    }));
+        : [];
+
+      // Safety net: enforce issues for low-scoring sections
+      if (score < 70 && issues.length === 0) {
+        const severity = score < 40 ? "critical" as const : "warning" as const;
+        const fallback = DEFAULT_ISSUES[category] ?? {
+          message: `This section scored ${score}/100 and needs improvement`,
+          fix:     "Review this section carefully and address the underlying weaknesses",
+        };
+        issues = [{ severity, message: fallback.message, fix: fallback.fix }];
+        console.warn(
+          `[OpenRouter] Section "${category}" scored ${score} but had no issues — injected default issue.`
+        );
+      }
+
+      return {
+        category,
+        label:    String(s.label ?? s.category ?? "").slice(0, 40),
+        score,
+        issues,
+        // ── FIX: isPremium is ALWAYS decided here by category, never by the AI ──
+        isPremium: PREMIUM_CATEGORIES.has(category),
+      };
+    });
 
   if (!Array.isArray(r.topFixes) || r.topFixes.length === 0) {
     console.warn("[OpenRouter] topFixes missing — synthesising from section issues.");
@@ -396,7 +433,7 @@ function validateResult(raw: unknown): ReviewResult {
       .filter(f => f && typeof f === "object")
       .slice(0, 5)
       .map(f => ({
-        severity: VALID_SEVERITIES.has(f.severity) ? f.severity : "suggestion",
+        severity: VALID_SEVERITIES.has(f.severity) ? f.severity : "suggestion" as const,
         message:  String(f.message ?? "").slice(0, 150),
         fix:      String(f.fix     ?? "").slice(0, 150),
       }));
@@ -407,9 +444,6 @@ function validateResult(raw: unknown): ReviewResult {
 
 // ─── Response parsing helper ──────────────────────────────────
 
-/**
- * Checks whether the API response has any usable text content.
- */
 function hasUsableContent(apiData: {
   choices?: Array<{
     finish_reason?: string;
@@ -490,9 +524,6 @@ function parseReviewResponse(apiData: {
 
 // ─── Exported functions ───────────────────────────────────────
 
-/**
- * Full ATS resume review. Returns a ReviewResult.
- */
 export async function reviewResume(resumeText: string): Promise<ReviewResult> {
   console.log(`[OpenRouter] Starting review | resume: ${resumeText.length} chars`);
 
@@ -507,7 +538,7 @@ export async function reviewResume(resumeText: string): Promise<ReviewResult> {
           headers,
           body: JSON.stringify({
             model,
-            max_tokens:  16_000,
+            max_tokens:  3_000,
             temperature: 0.0,
             messages: [
               { role: "system", content: REVIEW_SYSTEM_PROMPT },
@@ -519,14 +550,12 @@ export async function reviewResume(resumeText: string): Promise<ReviewResult> {
         throw new Error(`AI_SERVICE_ERROR:network:${(netErr as Error).message}`);
       }
 
-      // 404 — model deprecated, skip immediately
       if (res.status === 404) {
         const body = await res.text().catch(() => "");
-        console.warn(`[OpenRouter] "${model}" returned 404 (deprecated/unavailable) — skipping.`, body.slice(0, 200));
-        break; // next model
+        console.warn(`[OpenRouter] "${model}" returned 404 — skipping.`, body.slice(0, 200));
+        break;
       }
 
-      // 429 — rate limited, retry with backoff or skip
       if (res.status === 429) {
         if (attempt < MAX_RETRIES_PER_MODEL - 1) {
           const wait = RETRY_BASE_DELAY_MS * (attempt + 1);
@@ -535,10 +564,9 @@ export async function reviewResume(resumeText: string): Promise<ReviewResult> {
           continue;
         }
         console.warn(`[OpenRouter] "${model}" exhausted all retries — trying next model`);
-        break; // next model
+        break;
       }
 
-      // Other non-OK errors — surface immediately
       if (!res.ok) {
         const body = await res.text().catch(() => "");
         console.error(`[OpenRouter] HTTP ${res.status} on "${model}":`, body.slice(0, 300));
@@ -569,18 +597,14 @@ export async function reviewResume(resumeText: string): Promise<ReviewResult> {
 
       console.log(`[OpenRouter] "${model}" response:`, { finishReason, contentLength, reasoningLength });
 
-      // Skip reasoning-only responses with no JSON content
       if (!apiData.choices?.[0]?.message?.content?.trim() && finishReason === "length") {
-        console.warn(
-          `[OpenRouter] "${model}" has empty content with finish_reason=length ` +
-          `(reasoning-only truncation). Skipping to next model.`
-        );
-        break; // next model
+        console.warn(`[OpenRouter] "${model}" has empty content with finish_reason=length — skipping.`);
+        break;
       }
 
       if (!hasUsableContent(apiData)) {
         console.warn(`[OpenRouter] "${model}" returned no usable content — skipping.`);
-        break; // next model
+        break;
       }
 
       console.log(`[OpenRouter] ✓ Model "${model}" responded OK`);
@@ -596,9 +620,6 @@ export async function reviewResume(resumeText: string): Promise<ReviewResult> {
   throw new Error("AI_SERVICE_ERROR:rate_limited");
 }
 
-/**
- * Generate full resume section content for premium users.
- */
 export async function generateResumeContent(
   type: string,
   context: Record<string, string>
@@ -635,10 +656,6 @@ export async function generateResumeContent(
   return { content, tokens: data.usage?.total_tokens ?? 0 };
 }
 
-/**
- * Generate a single free preview bullet point for non-premium users.
- * Never throws — falls back to a template on any error.
- */
 export async function generateFreePreview(
   role: string,
   company: string
@@ -705,10 +722,6 @@ export async function generateFreePreview(
   }
 }
 
-/**
- * Template-based fallback bullet generator.
- * Used when AI generation fails — ensures graceful degradation.
- */
 export function generateFallbackPreview(role: string, company: string): string {
   const templates: Record<string, string> = {
     "engineer":          "• Developed and deployed scalable systems impacting 10K+ end users",

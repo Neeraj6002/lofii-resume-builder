@@ -16,6 +16,8 @@ export interface AuthUser {
   photoURL:    string | null;
   isPremium:   boolean;
   idToken:     string;
+  credits:     UserCredits;
+  unlockedResumes: string[];
 }
 
 // ─── User / Subscription ──────────────────────────────────────
@@ -42,8 +44,7 @@ export interface UserSubscription {
 }
 
 export interface UserCredits {
-  review:  number;
-  builder: number;
+  resumeUnlocks: number;
 }
 
 export interface UserProfile {
@@ -56,6 +57,7 @@ export interface UserProfile {
   credits:      UserCredits;
   subscription: UserSubscription;
   resumeIds:    string[];
+  unlockedResumes: string[];
 }
 
 // ─── Resume ───────────────────────────────────────────────────

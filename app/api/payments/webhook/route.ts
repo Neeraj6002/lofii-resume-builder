@@ -189,15 +189,12 @@ async function handlePaymentSucceeded(payload: DodoWebhookPayload): Promise<void
 
   const now = new Date();
 
-  // ── Write premium status + credits atomically ──────────────
-  // credits.review:  1 → one full AI resume review
-  // credits.builder: 1 → one full AI content generation session
+  // credits.resumeUnlocks: 1 → gives user 1 free lifetime resume unlock
   await userRef.set(
     {
       isPremium: true,
       credits: {
-        review:  1,
-        builder: 1,
+        resumeUnlocks: FieldValue.increment(1),
       },
       subscription: {
         status:         "active",
@@ -236,10 +233,6 @@ async function handlePaymentRefunded(payload: DodoWebhookPayload): Promise<void>
     .set(
       {
         isPremium: false,
-        credits: {
-          review:  0,
-          builder: 0,
-        },
         subscription: {
           status: "inactive",
           plan:   null,
