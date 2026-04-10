@@ -1,7 +1,7 @@
 "use client";
 // components/resume/ResumeForm.tsx
 
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { v4 as uuid } from "uuid";
 import AIGenerateModal from "./AIGenerateModal";
 import type {
@@ -136,14 +136,10 @@ function AddBtn({ label, onClick }: { label: string; onClick: () => void }) {
 }
 
 // ─── PDF Download via hidden iframe ───────────────────────────
-// Clones the resume DOM into a hidden iframe with all page styles
-// inlined and resolved — the browser's native print engine then
-// renders it into a pixel-perfect PDF, no canvas/font issues.
 function downloadResumeAsPDF() {
   const source = document.getElementById("resume-preview-root");
   if (!source) return;
 
-  // Collect all CSS rules from the page (skips cross-origin sheets)
   const styleSheets = Array.from(document.styleSheets)
     .map(sheet => {
       try {
@@ -154,7 +150,6 @@ function downloadResumeAsPDF() {
     })
     .join("\n");
 
-  // Clone and override layout for print
   const clone = source.cloneNode(true) as HTMLElement;
   clone.style.cssText = `
     width: 210mm;
@@ -167,7 +162,6 @@ function downloadResumeAsPDF() {
     background: #ffffff;
     box-sizing: border-box;
   `;
-  // Hide the "fill in your resume" watermark
   const watermark = clone.querySelector(".prev-watermark") as HTMLElement | null;
   if (watermark) watermark.style.display = "none";
 
@@ -183,63 +177,32 @@ function downloadResumeAsPDF() {
 <meta charset="utf-8"/>
 <style>
   *, *::before, *::after { box-sizing: border-box; }
-
-  @page {
-    size: A4 portrait;
-    margin: 0;
-  }
-
+  @page { size: A4 portrait; margin: 0; }
   html, body {
-    margin: 0;
-    padding: 0;
-    width: 210mm;
+    margin: 0; padding: 0; width: 210mm;
     background: #ffffff;
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
     color-adjust: exact;
   }
-
-  body {
-    font-family: 'Georgia', 'Times New Roman', serif;
-    font-size: 10px;
-    line-height: 1.55;
-    color: #1a1a1a;
-  }
-
-  /* Page styles from the app */
+  body { font-family: 'Georgia', 'Times New Roman', serif; font-size: 10px; line-height: 1.55; color: #1a1a1a; }
   ${styleSheets}
-
-  /* Override app chrome & dark-mode vars — force light resume */
   .preview-doc {
-    width: 210mm !important;
-    max-width: none !important;
-    min-height: 0 !important;
-    box-shadow: none !important;
-    overflow: visible !important;
-    background: #ffffff !important;
-    color: #1a1a1a !important;
+    width: 210mm !important; max-width: none !important; min-height: 0 !important;
+    box-shadow: none !important; overflow: visible !important;
+    background: #ffffff !important; color: #1a1a1a !important;
     position: relative !important;
-    word-break: break-word !important;
-    overflow-wrap: break-word !important;
+    word-break: break-word !important; overflow-wrap: break-word !important;
   }
-
-  /* Template-specific padding overrides */
   .preview-doc[data-t="classic"]   { padding: 48px 52px !important; }
   .preview-doc[data-t="modern"]    { padding: 0 !important; }
   .preview-doc[data-t="minimal"]   { padding: 40px 48px !important; }
   .preview-doc[data-t="executive"] { padding: 48px 52px !important; }
   .preview-doc[data-t="creative"]  { padding: 0 !important; }
   .preview-doc[data-t="tech"]      { padding: 40px 48px !important; font-family: 'Courier New', monospace !important; }
-
   .modern-inner { padding: 48px 52px !important; }
   .modern-strip { position: absolute !important; left: 0 !important; top: 0 !important; bottom: 0 !important; }
-
-  .preview-doc * {
-    word-break: break-word !important;
-    overflow-wrap: break-word !important;
-    max-width: 100% !important;
-  }
-
+  .preview-doc * { word-break: break-word !important; overflow-wrap: break-word !important; max-width: 100% !important; }
   .prev-watermark { display: none !important; }
 </style>
 </head>
@@ -253,12 +216,19 @@ function downloadResumeAsPDF() {
       iframe.contentWindow!.focus();
       iframe.contentWindow!.print();
       setTimeout(() => {
-        if (document.body.contains(iframe)) {
-          document.body.removeChild(iframe);
-        }
+        if (document.body.contains(iframe)) document.body.removeChild(iframe);
       }, 3000);
     }, 400);
   };
+}
+
+// ─── AI modal state type ──────────────────────────────────────
+interface AiModalState {
+  type:     AIContentType;
+  prefill:  Record<string, string>;
+  targetId: string;                         // entry id (exp/proj) or "summary"
+  field:    "summary" | "description";      // which field to update
+  section:  "summary" | "experience" | "projects"; // which section
 }
 
 // ─── Main component ───────────────────────────────────────────
@@ -268,11 +238,42 @@ export default function ResumeForm({
   onSkillsChange, onProjectsChange, onCertsChange,
 }: Props) {
   const [activeSection, setActiveSection] = useState<Section>("personal");
-  const [aiModal, setAiModal] = useState<{
-    type: AIContentType;
-    prefill: Record<string, string>;
-    onInsert: (content: string) => void;
-  } | null>(null);
+  const [aiModal, setAiModal] = useState<AiModalState | null>(null);
+
+  // ── Keep refs always pointing to latest prop values ──────────
+  // This is the core fix: instead of closing over stale array values
+  // inside onInsert callbacks, we read from refs at call time.
+  const experienceRef = useRef(experience);
+  const projectsRef   = useRef(projects);
+  useEffect(() => { experienceRef.current = experience; }, [experience]);
+  useEffect(() => { projectsRef.current   = projects;   }, [projects]);
+
+  // ── Insert handler called by AIGenerateModal ─────────────────
+  function handleAiInsert(content: string) {
+    if (!aiModal) return;
+
+    if (aiModal.section === "summary") {
+      onSummaryChange(content);
+      return;
+    }
+
+    if (aiModal.section === "experience") {
+      // Read from ref — always the latest array, never stale
+      const updated = experienceRef.current.map(e =>
+        e.id === aiModal.targetId ? { ...e, description: content } : e
+      );
+      onExpChange(updated);
+      return;
+    }
+
+    if (aiModal.section === "projects") {
+      const updated = projectsRef.current.map(p =>
+        p.id === aiModal.targetId ? { ...p, description: content } : p
+      );
+      onProjectsChange(updated);
+      return;
+    }
+  }
 
   function updateP(key: keyof PersonalInfo, val: string) {
     onPersonalChange({ ...personal, [key]: val });
@@ -424,9 +425,11 @@ export default function ResumeForm({
               <AIBtn
                 loading={false}
                 onClick={() => setAiModal({
-                  type: "summary",
-                  prefill: { jobTitle: personal.jobTitle, skills: skills.map(s => s.name).join(", ") },
-                  onInsert: onSummaryChange,
+                  type:     "summary",
+                  prefill:  { jobTitle: personal.jobTitle, skills: skills.map(s => s.name).join(", ") },
+                  targetId: "summary",
+                  field:    "summary",
+                  section:  "summary",
                 })}
               />
             </div>
@@ -475,9 +478,11 @@ export default function ResumeForm({
                   <AIBtn
                     loading={false}
                     onClick={() => setAiModal({
-                      type: "experience",
-                      prefill: { company: exp.company, role: exp.role, duration: `${exp.startDate} - ${exp.current ? "Present" : exp.endDate}` },
-                      onInsert: (c) => updateExp(exp.id, "description", c),
+                      type:     "experience",
+                      prefill:  { company: exp.company, role: exp.role, duration: `${exp.startDate} - ${exp.current ? "Present" : exp.endDate}` },
+                      targetId: exp.id,
+                      field:    "description",
+                      section:  "experience",
                     })}
                   />
                 </div>
@@ -622,9 +627,11 @@ export default function ResumeForm({
                   <AIBtn
                     loading={false}
                     onClick={() => setAiModal({
-                      type: "project",
-                      prefill: { name: proj.name, tech: proj.tech.join(", "), description: proj.description },
-                      onInsert: (c) => updateProj(proj.id, "description", c),
+                      type:     "project",
+                      prefill:  { name: proj.name, tech: proj.tech.join(", "), description: proj.description },
+                      targetId: proj.id,
+                      field:    "description",
+                      section:  "projects",
                     })}
                   />
                 </div>
@@ -682,7 +689,7 @@ export default function ResumeForm({
           resumeId={resumeId}
           type={aiModal.type}
           prefill={aiModal.prefill}
-          onInsert={aiModal.onInsert}
+          onInsert={handleAiInsert}
           onClose={() => setAiModal(null)}
         />
       )}
