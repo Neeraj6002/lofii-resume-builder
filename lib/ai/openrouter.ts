@@ -28,14 +28,19 @@ export interface ReviewResult {
 
 const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions";
 
-const MODELS = [  
-   "stepfun/step-3.5-flash",
-  "qwen/qwen3.6-plus",
+// Free models first for reliability / zero cost.
+// Paid / thinking models are last-resort fallbacks only —
+// they may prepend <think> blocks or tool calls before JSON.
+const MODELS = [
   "meta-llama/llama-3.3-70b-instruct:free",
-  "qwen/qwen3-14b:free",
   "mistralai/mistral-small-3.1-24b-instruct:free",
+  "google/gemma-3-27b-it:free",
+  "qwen/qwen3-14b:free",
+  "deepseek/deepseek-r1-distill-llama-70b:free",
   "nvidia/llama-3.1-nemotron-70b-instruct:free",
-  "openrouter/free",
+  // Paid fallbacks (used only when all free models fail)
+  "stepfun/step-3.5-flash",
+  "qwen/qwen3.6-plus",
 ];
 
 const MAX_RETRIES_PER_MODEL = 2;
@@ -93,6 +98,13 @@ async function fetchWithFallback(
       if (res.status === 404) {
         const body = await res.text().catch(() => "");
         console.warn(`[OpenRouter] "${model}" returned 404 — skipping.`, body.slice(0, 200));
+        break;
+      }
+
+      // 5xx: upstream error — try next model rather than crashing the chain
+      if (res.status >= 500) {
+        const body = await res.text().catch(() => "");
+        console.warn(`[OpenRouter] "${model}" returned ${res.status} — trying next model.`, body.slice(0, 200));
         break;
       }
 
@@ -313,6 +325,23 @@ function stripFences(text: string): string {
     .trim();
 }
 
+/**
+ * Strips <think>…</think> reasoning blocks that newer thinking models
+ * (Qwen3, DeepSeek-R1, etc.) inject before their JSON response.
+ * Also handles partial blocks where the closing tag is missing (truncated).
+ */
+function stripThinkingTags(text: string): string {
+  // Remove complete <think>…</think> blocks (may span multiple lines)
+  let result = text.replace(/<think>[\s\S]*?<\/think>/gi, "");
+  // If an opening tag remains but no closing tag (truncated output),
+  // drop everything from the opening tag onward and keep any pre-tag content.
+  const openIdx = result.search(/<think>/i);
+  if (openIdx !== -1) {
+    result = result.slice(0, openIdx);
+  }
+  return result.trim();
+}
+
 function repairTruncatedJson(raw: string): string {
   let s        = raw.trimEnd().replace(/,\s*$/, "");
   const opens: string[] = [];
@@ -340,18 +369,22 @@ function repairTruncatedJson(raw: string): string {
 }
 
 function extractAndParse(text: string): ReviewResult {
+  // Stage 0: strip <think>…</think> reasoning blocks (Qwen3, DeepSeek-R1, etc.)
+  const clean = stripThinkingTags(text);
+
+  try { return JSON.parse(clean) as ReviewResult; } catch { /* next */ }
   try { return JSON.parse(text) as ReviewResult; } catch { /* next */ }
 
-  const stripped = stripFences(text);
+  const stripped = stripFences(clean);
   try { return JSON.parse(stripped) as ReviewResult; } catch { /* next */ }
 
-  const lastBlock = extractLastJsonBlock(text);
+  const lastBlock = extractLastJsonBlock(clean) ?? extractLastJsonBlock(text);
   if (lastBlock) {
     try { return JSON.parse(lastBlock) as ReviewResult; } catch { /* next */ }
     try { return JSON.parse(repairTruncatedJson(lastBlock)) as ReviewResult; } catch { /* next */ }
   }
 
-  const searchText  = text.slice(0, 20_000);
+  const searchText  = clean.length > 0 ? clean.slice(0, 20_000) : text.slice(0, 20_000);
   const jsonPattern = /\{[^{}]{0,8000}"overallScore"[\s\S]{0,8000}\}/g;
   const candidates  = [...searchText.matchAll(jsonPattern)]
     .map(m => m[0])
@@ -569,8 +602,12 @@ export async function reviewResume(resumeText: string): Promise<ReviewResult> {
 
       if (!res.ok) {
         const body = await res.text().catch(() => "");
-        console.error(`[OpenRouter] HTTP ${res.status} on "${model}":`, body.slice(0, 300));
-        if (res.status >= 500) throw new Error(`AI_SERVICE_ERROR:upstream_${res.status}`);
+        console.warn(`[OpenRouter] HTTP ${res.status} on "${model}":`, body.slice(0, 300));
+        if (res.status >= 500) {
+          // Upstream error — skip this model and try the next
+          break;
+        }
+        // 4xx errors are usually auth/quota issues on this model; throw
         throw new Error(`AI_SERVICE_ERROR:${res.status}`);
       }
 
@@ -588,7 +625,9 @@ export async function reviewResume(resumeText: string): Promise<ReviewResult> {
       try {
         apiData = await res.json();
       } catch {
-        throw new Error("AI_SERVICE_ERROR:bad_api_response");
+        // Malformed JSON from this model — skip it and try the next
+        console.warn(`[OpenRouter] "${model}" returned unparseable JSON — skipping.`);
+        break;
       }
 
       const finishReason    = apiData.choices?.[0]?.finish_reason;

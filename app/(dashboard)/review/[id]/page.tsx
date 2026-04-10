@@ -649,7 +649,7 @@ export default function ReviewResultsPage({
                   onClick={handleUpgrade}
                   disabled={upgrading}
                 >
-                  {upgrading ? "" : "Unlock Full Report — ₹999 →"}
+                  {upgrading ? "" : "Unlock Full Report — $2 →"}
                 </button>
                 <p style={{ fontSize: "var(--text-xs)", color: "var(--text-disabled)", marginTop: "var(--space-3)" }}>
                   One-time payment · Lifetime access · No subscription

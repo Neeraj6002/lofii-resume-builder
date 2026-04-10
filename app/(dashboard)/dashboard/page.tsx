@@ -542,6 +542,7 @@ function DashboardContent() {
   const [uploadedResumes, setUploadedResumes] = useState<UploadedResumeCard[]>([]);
   const [loading,         setLoading]         = useState(true);
   const [menuOpen,        setMenuOpen]        = useState(false);
+  const [premiumOpen,     setPremiumOpen]     = useState(false);
   const [upgrading,       setUpgrading]       = useState(false);
 
   useEffect(() => {
@@ -635,7 +636,16 @@ function DashboardContent() {
         .topbar-logo span { color: var(--gold); }
         .topbar-right { display: flex; align-items: center; gap: var(--space-4); }
 
-        .premium-pill { display: flex; align-items: center; gap: var(--space-1); background: var(--gold-dim); border: 1px solid var(--gold-border); color: var(--gold-light); padding: 3px 10px; border-radius: var(--radius-full); font-size: var(--text-xs); font-weight: 600; }
+        .premium-pill { display: flex; align-items: center; gap: var(--space-1); background: var(--gold-dim); border: 1px solid var(--gold-border); color: var(--gold-light); padding: 3px 10px; border-radius: var(--radius-full); font-size: var(--text-xs); font-weight: 600; cursor: pointer; transition: background var(--duration-fast), box-shadow var(--duration-fast); position: relative; }
+        .premium-pill:hover { background: rgba(201,168,76,0.18); box-shadow: 0 0 0 1px var(--gold-border); }
+        .premium-pill-wrap { position: relative; }
+        .premium-dropdown { position: absolute; top: calc(100% + 10px); right: 0; background: var(--bg-elevated); border: 1px solid var(--gold-border); border-radius: var(--radius-lg); padding: var(--space-3); min-width: 220px; box-shadow: var(--shadow-md); z-index: var(--z-dropdown); animation: fade-down 0.15s var(--ease) both; }
+        .prem-drop-title { font-size: var(--text-xs); font-weight: 700; color: var(--gold-light); text-transform: uppercase; letter-spacing: 0.07em; padding: var(--space-2) var(--space-2) var(--space-3); border-bottom: 1px solid var(--border); margin-bottom: var(--space-2); }
+        .prem-credit-row { display: flex; align-items: center; justify-content: space-between; padding: var(--space-2) var(--space-2); border-radius: var(--radius-sm); }
+        .prem-credit-label { font-size: var(--text-xs); color: var(--text-secondary); }
+        .prem-credit-val { font-size: var(--text-sm); font-weight: 800; font-family: var(--font-display); }
+        .prem-credit-val.ok   { color: var(--gold-light); }
+        .prem-credit-val.none { color: var(--text-secondary); }
 
         .avatar-wrap { position: relative; }
         .avatar { width: 34px; height: 34px; border-radius: 50%; background: var(--gold-dim); border: 1px solid var(--gold-border); display: flex; align-items: center; justify-content: center; font-size: var(--text-xs); font-weight: 700; color: var(--gold-light); cursor: pointer; transition: border-color var(--duration-base); }
@@ -704,8 +714,28 @@ function DashboardContent() {
         .empty-title { font-size: var(--text-xl); color: var(--text-primary); }
         .empty-desc  { font-size: var(--text-sm); color: var(--text-secondary); max-width: 320px; }
 
+        /* ── Premium Credits Widget ─────────────────────────────── */
+        .credits-widget { background: linear-gradient(135deg, var(--bg-surface) 0%, rgba(201,168,76,.07) 100%); border: 1px solid var(--gold-border); border-radius: var(--radius-lg); padding: var(--space-5) var(--space-6); margin-bottom: var(--space-8); animation: fade-up 0.4s var(--ease) both; }
+        .credits-widget-header { display: flex; align-items: center; gap: var(--space-3); margin-bottom: var(--space-4); }
+        .credits-widget-title { font-size: var(--text-sm); font-weight: 700; color: var(--gold-light); text-transform: uppercase; letter-spacing: 0.06em; }
+        .credits-widget-sub { font-size: var(--text-xs); color: var(--text-secondary); margin-top: 1px; }
+        .credits-stats { display: flex; gap: var(--space-4); flex-wrap: wrap; }
+        .credit-stat { flex: 1; min-width: 120px; background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius-md); padding: var(--space-3) var(--space-4); display: flex; flex-direction: column; gap: var(--space-1); position: relative; overflow: hidden; transition: border-color var(--duration-base); }
+        .credit-stat:hover { border-color: var(--gold-border); }
+        .credit-stat-glow { position: absolute; inset: 0; opacity: 0; background: radial-gradient(circle at 50% 0%, rgba(201,168,76,0.12), transparent 70%); transition: opacity var(--duration-base); }
+        .credit-stat:hover .credit-stat-glow { opacity: 1; }
+        .credit-stat-value { font-size: 1.6rem; font-weight: 800; line-height: 1; font-family: var(--font-display); }
+        .credit-stat-value.has-credits { color: var(--gold-light); }
+        .credit-stat-value.no-credits { color: var(--text-secondary); }
+        .credit-stat-label { font-size: var(--text-xs); color: var(--text-secondary); font-weight: 500; }
+        .credit-stat-badge { display: inline-flex; align-items: center; gap: 3px; margin-top: var(--space-1); font-size: 10px; font-weight: 600; padding: 2px 6px; border-radius: var(--radius-full); }
+        .credit-stat-badge.active { background: rgba(201,168,76,0.15); color: var(--gold-light); }
+        .credit-stat-badge.used   { background: var(--bg-surface); color: var(--text-secondary); }
+
         @media (max-width: 640px) {
           .premium-banner { flex-direction: column; align-items: flex-start; }
+          .credits-widget { padding: var(--space-4); }
+          .credits-stats  { gap: var(--space-3); }
           .dash-header    { flex-direction: column; align-items: flex-start; gap: var(--space-4); }
           .dash-actions   { width: 100%; }
           .dash-actions .btn { flex: 1; justify-content: center; }
@@ -718,7 +748,39 @@ function DashboardContent() {
         <header className="topbar">
           <Link href="/dashboard" className="topbar-logo">Resu<span>fii</span></Link>
           <div className="topbar-right">
-            {user?.isPremium && <div className="premium-pill">✦ Premium</div>}
+            {user?.isPremium && (
+              <div className="premium-pill-wrap">
+                <button
+                  className="premium-pill"
+                  onClick={() => setPremiumOpen(v => !v)}
+                  aria-label="View premium credits"
+                >
+                  ✦ Premium
+                </button>
+                {premiumOpen && (() => {
+                  const unlocks = user.credits?.resumeUnlocks ?? 0;
+                  return (
+                    <>
+                      <div style={{ position: "fixed", inset: 0, zIndex: "calc(var(--z-dropdown) - 1)" }} onClick={() => setPremiumOpen(false)} />
+                      <div className="premium-dropdown">
+                        <div className="prem-drop-title">✦ Premium Lifetime</div>
+                        <div className="prem-credit-row">
+                          <span className="prem-credit-label">Review credits left</span>
+                          <span className={`prem-credit-val ${unlocks > 0 ? "ok" : "none"}`}>{unlocks}</span>
+                        </div>
+                        <div className="prem-credit-row">
+                          <span className="prem-credit-label">Builder credits left</span>
+                          <span className={`prem-credit-val ${unlocks > 0 ? "ok" : "none"}`}>{unlocks}</span>
+                        </div>
+                        <div className="prem-credit-row" style={{ borderTop: "1px solid var(--border)", marginTop: "var(--space-1)", paddingTop: "var(--space-2)" }}>
+                          <span className="prem-credit-label" style={{ fontSize: "0.67rem", color: "var(--text-disabled)" }}>Each credit unlocks 1 resume for both AI features</span>
+                        </div>
+                      </div>
+                    </>
+                  );
+                })()}
+              </div>
+            )}
             <div className="avatar-wrap">
               <div
                 className="avatar"
@@ -745,6 +807,17 @@ function DashboardContent() {
                       </svg>
                       Dashboard
                     </Link>
+                    {/* Get Premium — always visible so users can buy more unlock credits */}
+                    <button
+                      className="menu-item"
+                      style={{ color: "var(--gold-light)" }}
+                      onClick={() => { setMenuOpen(false); handleUpgrade(); }}
+                    >
+                      <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                        <path d="M7 1l1.53 3.09 3.41.5-2.47 2.4.58 3.41L7 8.77 3.95 10.4l.58-3.41L2.06 4.59l3.41-.5z" fill="var(--gold)" stroke="var(--gold)" strokeWidth="0.5" strokeLinejoin="round"/>
+                      </svg>
+                      {upgrading ? "Loading…" : "Get Premium — $2"}
+                    </button>
                     <button className="menu-item danger" onClick={handleSignOut}>
                       <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
                         <path d="M5 7h7M9 5l2 2-2 2M9 2H3a1 1 0 00-1 1v8a1 1 0 001 1h6" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
@@ -778,6 +851,7 @@ function DashboardContent() {
               </button>
             </div>
           )}
+
 
           <div className="dash-header">
             <div>

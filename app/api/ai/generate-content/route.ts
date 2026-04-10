@@ -122,11 +122,17 @@ export async function POST(request: Request) {
     const userRef = adminDb.collection("users").doc(uid);
 
     await adminDb.runTransaction(async (tx) => {
-      const snap           = await tx.get(userRef);
-      let currentUnlocks = snap.data()?.credits?.resumeUnlocks ?? (snap.data()?.credits as any)?.builder ?? 0;
-      if (currentUnlocks === 0 && snap.data()?.isPremium) currentUnlocks = 1;
-      const currentTokens  = snap.data()?.totalTokensUsed  ?? 0;
-      const currentUnlockedResumes = snap.data()?.unlockedResumes ?? [];
+      const snap = await tx.get(userRef);
+      const snapData = snap.data() ?? {};
+
+      let currentUnlocks: number = snapData?.credits?.resumeUnlocks ?? (snapData?.credits as any)?.builder ?? 0;
+      // Apply the same isPremium virtual-credit fallback as the pre-check above.
+      // This ensures a premium user with 0 stored unlocks can still unlock their first resume.
+      const isPremiumUser = snapData?.isPremium === true;
+      if (currentUnlocks === 0 && isPremiumUser) currentUnlocks = 1;
+
+      const currentTokens: number          = snapData?.totalTokensUsed ?? 0;
+      const currentUnlockedResumes: string[] = snapData?.unlockedResumes ?? [];
 
       const docIdToUnlock = context.resumeId;
 
@@ -134,17 +140,23 @@ export async function POST(request: Request) {
         if (currentUnlocks < 1) {
           throw new Error("NO_RESUME_UNLOCKS");
         }
-        tx.update(userRef, {
-          "credits.resumeUnlocks": FieldValue.increment(-1),
-          totalTokensUsed:   currentTokens + tokens,
-          lastGenerationAt:  new Date(),
-          unlockedResumes: FieldValue.arrayUnion(docIdToUnlock),
-        });
-        console.info(`[Generate] ✓ Unlocked resume ${docIdToUnlock} and consumed unlock credit for user ${uid}`);
+        // Only decrement the stored counter when there actually is a stored credit
+        // (i.e. don't try to decrement the virtual isPremium credit that only exists in memory).
+        const storedUnlocks: number = snapData?.credits?.resumeUnlocks ?? (snapData?.credits as any)?.builder ?? 0;
+        const updates: Record<string, unknown> = {
+          totalTokensUsed:  currentTokens + tokens,
+          lastGenerationAt: new Date(),
+          unlockedResumes:  FieldValue.arrayUnion(docIdToUnlock),
+        };
+        if (storedUnlocks > 0) {
+          updates["credits.resumeUnlocks"] = FieldValue.increment(-1);
+        }
+        tx.update(userRef, updates);
+        console.info(`[Generate] ✓ Unlocked resume ${docIdToUnlock} for user ${uid} | storedUnlocks: ${storedUnlocks} | isPremium: ${isPremiumUser}`);
       } else {
         tx.update(userRef, {
-          totalTokensUsed:   currentTokens + tokens,
-          lastGenerationAt:  new Date(),
+          totalTokensUsed:  currentTokens + tokens,
+          lastGenerationAt: new Date(),
         });
       }
     });

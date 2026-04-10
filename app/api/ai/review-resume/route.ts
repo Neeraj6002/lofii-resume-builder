@@ -39,9 +39,11 @@ export async function POST(request: Request) {
     if (resumeUnlocks === 0 && profile?.isPremium) resumeUnlocks = 1;
     const unlockedResumes = profile?.unlockedResumes ?? [];
     
-    // Identify the resume being reviewed
-    const resumeId = request.headers.get("x-resume-id");
-    const uploadedResumeId = request.headers.get("x-uploaded-resume-id");
+    // Identify the resume being reviewed.
+    // The dashboard sends resumeId in the request body; headers are used by
+    // the upload review flow. Accept both so neither path is missed.
+    const resumeId         = request.headers.get("x-resume-id")         ?? (body.resumeId         as string | undefined) ?? null;
+    const uploadedResumeId = request.headers.get("x-uploaded-resume-id") ?? (body.uploadedResumeId as string | undefined) ?? null;
     const targetDocId = resumeId || uploadedResumeId;
 
     let isDocumentUnlocked = false;
@@ -89,18 +91,28 @@ export async function POST(request: Request) {
         const userRef = adminDb.collection("users").doc(uid);
 
         await adminDb.runTransaction(async (tx) => {
-          const snap = await tx.get(userRef);
-          let currentResumeUnlocks = snap.data()?.credits?.resumeUnlocks ?? (snap.data()?.credits as any)?.builder ?? 0;
-          if (currentResumeUnlocks === 0 && snap.data()?.isPremium) currentResumeUnlocks = 1;
-          const currentUnlockedResumes = snap.data()?.unlockedResumes ?? [];
+          const snap     = await tx.get(userRef);
+          const snapData = snap.data() ?? {};
 
-          if (currentResumeUnlocks < 1) throw new Error("NO_RESUME_UNLOCKS");
+          // Stored count in Firestore (before virtual isPremium fallback)
+          const storedUnlocks: number = snapData?.credits?.resumeUnlocks ?? (snapData?.credits as any)?.builder ?? 0;
+          const isPremiumUser          = snapData?.isPremium === true;
+          // Virtual count — at least 1 if premium (mirrors pre-check logic)
+          const effectiveUnlocks       = storedUnlocks === 0 && isPremiumUser ? 1 : storedUnlocks;
+
+          const currentUnlockedResumes: string[] = snapData?.unlockedResumes ?? [];
+
+          if (effectiveUnlocks < 1) throw new Error("NO_RESUME_UNLOCKS");
           if (currentUnlockedResumes.includes(targetDocId)) return;
 
-          tx.update(userRef, {
-            "credits.resumeUnlocks": FieldValue.increment(-1),
+          const updates: Record<string, unknown> = {
             unlockedResumes: FieldValue.arrayUnion(targetDocId),
-          });
+          };
+          // Only decrement stored counter when it's real (> 0), not the virtual premium credit
+          if (storedUnlocks > 0) {
+            updates["credits.resumeUnlocks"] = FieldValue.increment(-1);
+          }
+          tx.update(userRef, updates);
         });
 
         console.info(`[Review] ✓ Unlocked resume ${targetDocId} for user ${uid}`);
