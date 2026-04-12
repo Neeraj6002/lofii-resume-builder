@@ -1,7 +1,7 @@
 "use client";
 // app/(dashboard)/dashboard/page.tsx
 
-import { useEffect, useState, useCallback, useRef, Suspense } from "react";
+import { useEffect, useState, useCallback, Suspense } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/hooks/useAuth";
@@ -52,7 +52,6 @@ function templateLabel(t: string): string {
 }
 
 // ─── Resume data → plain text converter ──────────────────────
-// Used so "Built with Resufii" cards can be reviewed without re-uploading a file
 
 function resumeDataToText(resume: Record<string, unknown>): string {
   const lines: string[] = [];
@@ -230,7 +229,6 @@ function ResumeCardItem({ resume, onDelete, onReviewDone }: {
     }
   }
 
-  // Fetch full resume data from API, convert to text, then send to review endpoint
   async function handleReview() {
     if (!user) return;
     setReviewing(true);
@@ -312,7 +310,6 @@ function ResumeCardItem({ resume, onDelete, onReviewDone }: {
       ) : (
         <div className="resume-actions">
           <Link href={`/resume/${resume.id}/edit`} className="btn btn-secondary btn-sm" style={{ flex: 1, justifyContent: "center" }}>Edit</Link>
-          {/* Review now uses the stored resume data — no file upload needed */}
           <button
             className="btn btn-ghost btn-sm"
             style={{ flex: 1, justifyContent: "center" }}
@@ -376,71 +373,70 @@ function UploadedResumeCardItem({
     }
   }
 
-  // Download the already-uploaded file from storage, extract text, then review
- async function handleReview() {
-  if (!user) return;
-  setReviewing(true);
-  try {
-    setReviewStep("Fetching your file…");
-    const token = await getIdToken();
-    if (!token) throw new Error("Session expired.");
+  async function handleReview() {
+    if (!user) return;
+    setReviewing(true);
+    try {
+      setReviewStep("Fetching your file…");
+      const token = await getIdToken();
+      if (!token) throw new Error("Session expired.");
 
-    const urlRes = await fetch(`/api/uploaded-resume/${resume.id}/download-url`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (!urlRes.ok) throw new Error("Could not retrieve your file. Try uploading again.");
+      const urlRes = await fetch(`/api/uploaded-resume/${resume.id}/download-url`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!urlRes.ok) throw new Error("Could not retrieve your file. Try uploading again.");
 
-    setReviewStep("Extracting text…");
-    const arrayBuffer = await urlRes.arrayBuffer();
+      setReviewStep("Extracting text…");
+      const arrayBuffer = await urlRes.arrayBuffer();
 
-    let resumeText = "";
-    if (resume.fileType === "pdf") {
-      resumeText = await extractPDF(arrayBuffer);
-    } else {
-      resumeText = await extractDOCX(arrayBuffer);
+      let resumeText = "";
+      if (resume.fileType === "pdf") {
+        resumeText = await extractPDF(arrayBuffer);
+      } else {
+        resumeText = await extractDOCX(arrayBuffer);
+      }
+
+      if (!resumeText || resumeText.length < 50) {
+        throw new Error("Could not extract enough text. Make sure it is not a scanned image PDF.");
+      }
+      if (resumeText.length > 15000) resumeText = resumeText.slice(0, 15000);
+
+      setReviewStep("Analysing with AI…");
+      const reviewRes = await fetch("/api/ai/review-resume", {
+        method: "POST",
+        headers: {
+          "Content-Type":         "application/json",
+          Authorization:          `Bearer ${token}`,
+          "x-uploaded-resume-id": resume.id,
+        },
+        body: JSON.stringify({ resumeText }),
+      });
+      const data = await reviewRes.json();
+
+      if (!reviewRes.ok) {
+        if (reviewRes.status === 429) throw new Error("Too many review requests. Please wait.");
+        if (reviewRes.status === 503) throw new Error("AI service temporarily unavailable.");
+        throw new Error(data.error ?? "Review failed.");
+      }
+
+      const reviewId = crypto.randomUUID();
+      sessionStorage.setItem(`review:${reviewId}`, JSON.stringify({
+        ...data,
+        fileName:         resume.fileName,
+        reviewedAt:       new Date().toISOString(),
+        uploadedResumeId: resume.id,
+      }));
+
+      onReviewDone(resume.id, data.overallScore);
+      router.push(`/review/${reviewId}`);
+
+    } catch (err: unknown) {
+      toast.error((err as Error).message);
+    } finally {
+      setReviewing(false);
+      setReviewStep("");
     }
-
-    if (!resumeText || resumeText.length < 50) {
-      throw new Error("Could not extract enough text. Make sure it is not a scanned image PDF.");
-    }
-    if (resumeText.length > 15000) resumeText = resumeText.slice(0, 15000);
-
-    setReviewStep("Analysing with AI…");
-    const reviewRes = await fetch("/api/ai/review-resume", {
-      method: "POST",
-      headers: {
-        "Content-Type":         "application/json",
-        Authorization:          `Bearer ${token}`,
-        "x-uploaded-resume-id": resume.id,
-      },
-      body: JSON.stringify({ resumeText }),
-    });
-    const data = await reviewRes.json();
-
-    if (!reviewRes.ok) {
-      if (reviewRes.status === 429) throw new Error("Too many review requests. Please wait.");
-      if (reviewRes.status === 503) throw new Error("AI service temporarily unavailable.");
-      throw new Error(data.error ?? "Review failed.");
-    }
-
-    const reviewId = crypto.randomUUID();
-    sessionStorage.setItem(`review:${reviewId}`, JSON.stringify({
-      ...data,
-      fileName:         resume.fileName,
-      reviewedAt:       new Date().toISOString(),
-      uploadedResumeId: resume.id,
-    }));
-
-    onReviewDone(resume.id, data.overallScore);
-    router.push(`/review/${reviewId}`);
-
-  } catch (err: unknown) {
-    toast.error((err as Error).message);
-  } finally {
-    setReviewing(false);
-    setReviewStep("");
   }
-}
 
   const shortName = resume.fileName.length > 26
     ? resume.fileName.slice(0, 23) + "…"
@@ -479,7 +475,6 @@ function UploadedResumeCardItem({
           </div>
         ) : (
           <>
-            {/* Review now fetches the already-stored file — no re-upload needed */}
             <button
               className="btn btn-primary btn-sm"
               style={{ flex: 1, justifyContent: "center" }}
@@ -524,7 +519,8 @@ function EmptyState() {
       <h4 className="empty-title">No resumes yet</h4>
       <p className="empty-desc">Create your first resume or upload one for review.</p>
       <div style={{ display: "flex", gap: "var(--space-3)", flexWrap: "wrap", justifyContent: "center" }}>
-        <Link href="/resume/create" className="btn btn-primary">Create Resume →</Link>
+        {/* ── CHANGED: /resume/create → /resume/new ── */}
+        <Link href="/resume/new" className="btn btn-primary">Create Resume →</Link>
         <Link href="/review/upload" className="btn btn-secondary">Upload & Review</Link>
       </div>
     </div>
@@ -714,7 +710,6 @@ function DashboardContent() {
         .empty-title { font-size: var(--text-xl); color: var(--text-primary); }
         .empty-desc  { font-size: var(--text-sm); color: var(--text-secondary); max-width: 320px; }
 
-        /* ── Premium Credits Widget ─────────────────────────────── */
         .credits-widget { background: linear-gradient(135deg, var(--bg-surface) 0%, rgba(201,168,76,.07) 100%); border: 1px solid var(--gold-border); border-radius: var(--radius-lg); padding: var(--space-5) var(--space-6); margin-bottom: var(--space-8); animation: fade-up 0.4s var(--ease) both; }
         .credits-widget-header { display: flex; align-items: center; gap: var(--space-3); margin-bottom: var(--space-4); }
         .credits-widget-title { font-size: var(--text-sm); font-weight: 700; color: var(--gold-light); text-transform: uppercase; letter-spacing: 0.06em; }
@@ -807,7 +802,6 @@ function DashboardContent() {
                       </svg>
                       Dashboard
                     </Link>
-                    {/* Get Premium — always visible so users can buy more unlock credits */}
                     <button
                       className="menu-item"
                       style={{ color: "var(--gold-light)" }}
@@ -852,7 +846,6 @@ function DashboardContent() {
             </div>
           )}
 
-
           <div className="dash-header">
             <div>
               <h1 className="dash-title">My Resumes</h1>
@@ -867,7 +860,8 @@ function DashboardContent() {
                 </svg>
                 Upload Resume
               </Link>
-              <Link href="/resume/create" className="btn btn-primary btn-sm">
+              {/* ── CHANGED: /resume/create → /resume/new ── */}
+              <Link href="/resume/new" className="btn btn-primary btn-sm">
                 <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
                   <path d="M7 2v10M2 7h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
                 </svg>

@@ -1,17 +1,14 @@
 "use client";
 // app/(dashboard)/review/[id]/page.tsx
-// ============================================================
-// REVIEW RESULTS PAGE
-// - Reads review data from sessionStorage
-// - Shows overall ATS score ring + gradient bar
-// - Left: score + top fixes list (premium gated)
-// - Right: section breakdown cards (premium gated)
-// ============================================================
+// Added: "Fix in Builder" button that extracts resumeText from the review
+// sessionStorage entry, sends it through the AI parse API, and navigates
+// to /resume/create?import=1 with the form pre-populated.
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/hooks/useAuth";
+import { toast } from "sonner";
 import type { ReviewSection, ReviewIssue } from "@/types";
 
 // ─── Types ────────────────────────────────────────────────────
@@ -23,20 +20,19 @@ interface ReviewData {
   fileName:      string;
   reviewedAt:    string;
   resumeId:      string | null;
+  resumeText?:   string; // stored by upload page for "Fix in Builder"
 }
 
 // ─── Score ring ───────────────────────────────────────────────
 function ScoreRing({ score }: { score: number }) {
-  const r    = 54;
-  const circ = 2 * Math.PI * r;
+  const r      = 54;
+  const circ   = 2 * Math.PI * r;
   const offset = circ - (score / 100) * circ;
-
-  const color =
+  const color  =
     score >= 75 ? "var(--success)" :
     score >= 50 ? "var(--warning)" :
     "var(--error)";
-
-  const label =
+  const label  =
     score >= 75 ? "Excellent" :
     score >= 60 ? "Good"      :
     score >= 40 ? "Fair"      :
@@ -46,25 +42,15 @@ function ScoreRing({ score }: { score: number }) {
     <div className="score-ring-wrap">
       <svg width="140" height="140" viewBox="0 0 140 140">
         <circle cx="70" cy="70" r={r} fill="none" stroke="var(--bg-elevated)" strokeWidth="10"/>
-        <circle
-          cx="70" cy="70" r={r}
-          fill="none"
-          stroke={color}
-          strokeWidth="10"
-          strokeLinecap="round"
-          strokeDasharray={circ}
-          strokeDashoffset={offset}
+        <circle cx="70" cy="70" r={r} fill="none" stroke={color} strokeWidth="10"
+          strokeLinecap="round" strokeDasharray={circ} strokeDashoffset={offset}
           transform="rotate(-90 70 70)"
           style={{ transition: "stroke-dashoffset 1.2s cubic-bezier(0.4,0,0.2,1)" }}
         />
         <text x="70" y="65" textAnchor="middle" fill="var(--text-primary)"
-          fontSize="30" fontWeight="900" fontFamily="var(--font-display)">
-          {score}
-        </text>
+          fontSize="30" fontWeight="900" fontFamily="var(--font-display)">{score}</text>
         <text x="70" y="84" textAnchor="middle" fill="var(--text-secondary)"
-          fontSize="10" fontFamily="var(--font-body)">
-          OVERALL
-        </text>
+          fontSize="10" fontFamily="var(--font-body)">OVERALL</text>
       </svg>
       <div className="score-label" style={{ color }}>{label}</div>
     </div>
@@ -76,20 +62,9 @@ function ScoreBar({ score }: { score: number }) {
   return (
     <div className="score-bar-wrap">
       <div className="score-bar-track">
-        <div
-          className="score-bar-fill"
-          style={{ width: `${score}%` }}
-        />
-        <div
-          className="score-bar-marker"
-          style={{ left: `${score}%` }}
-          title={`Your score: ${score}`}
-        />
-        <div
-          className="score-bar-marker top-marker"
-          style={{ left: "88%" }}
-          title="Top resumes: 88"
-        />
+        <div className="score-bar-fill" style={{ width: `${score}%` }} />
+        <div className="score-bar-marker" style={{ left: `${score}%` }} title={`Your score: ${score}`} />
+        <div className="score-bar-marker top-marker" style={{ left: "88%" }} title="Top resumes: 88" />
       </div>
       <div className="score-bar-labels">
         <span>0</span>
@@ -103,28 +78,19 @@ function ScoreBar({ score }: { score: number }) {
   );
 }
 
-// ─── Section score row ────────────────────────────────────────
-function SectionRow({
-  section,
-  isPremium,
-  onUpgrade,
-}: {
-  section: ReviewSection;
+// ─── Section row ──────────────────────────────────────────────
+function SectionRow({ section, isPremium, onUpgrade }: {
+  section:   ReviewSection;
   isPremium: boolean;
   onUpgrade: () => void;
 }) {
   const [open, setOpen] = useState(false);
-
-  // FIX: default section.isPremium to false if undefined
-  // so sections are never incorrectly locked for premium users
   const sectionRequiresPremium = section.isPremium ?? false;
   const locked = sectionRequiresPremium && !isPremium;
-
   const color =
     section.score >= 75 ? "var(--success)" :
     section.score >= 50 ? "var(--warning)" :
     "var(--error)";
-
   const LABELS: Record<string, string> = {
     ats_compatibility: "ATS Compatibility",
     keywords:          "Keyword Density",
@@ -138,64 +104,37 @@ function SectionRow({
 
   return (
     <div className={`section-row${open && !locked ? " open" : ""}${locked ? " locked" : ""}`}>
-      <div
-        className="section-row-header"
+      <div className="section-row-header"
         onClick={() => setOpen(v => !v)}
-        role="button"
-        tabIndex={0}
+        role="button" tabIndex={0}
         onKeyDown={e => e.key === "Enter" && setOpen(v => !v)}
       >
-        {/* Lock icon — shown only when actually locked */}
         {locked && (
           <svg className="lock-icon" width="13" height="13" viewBox="0 0 13 13" fill="none">
             <rect x="2" y="5.5" width="9" height="6.5" rx="1.5" stroke="currentColor" strokeWidth="1.2"/>
             <path d="M4 5.5V4a2.5 2.5 0 015 0v1.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
           </svg>
         )}
-
-        <span className="section-label">
-          {LABELS[section.category] ?? section.label}
-        </span>
-
-        {/* Mini score bar */}
+        <span className="section-label">{LABELS[section.category] ?? section.label}</span>
         <div className="mini-bar-wrap">
           <div className="mini-bar-track">
-            <div
-              className="mini-bar-fill"
-              style={{
-                width: locked ? "0%" : `${section.score}%`,
-                background: color,
-              }}
-            />
+            <div className="mini-bar-fill" style={{ width: locked ? "0%" : `${section.score}%`, background: color }} />
           </div>
         </div>
-
-        {/* Score number */}
         <span className="section-score" style={{ color: locked ? "var(--text-disabled)" : color }}>
           {locked ? "—" : section.score}
         </span>
-
-        {/* Chevron — always shown for unlocked rows */}
         {!locked && (
-          <svg
-            width="14" height="14" viewBox="0 0 14 14" fill="none"
-            style={{ transform: open ? "rotate(180deg)" : "none", transition: "transform 0.2s", flexShrink: 0 }}
-          >
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none"
+            style={{ transform: open ? "rotate(180deg)" : "none", transition: "transform 0.2s", flexShrink: 0 }}>
             <path d="M3 5l4 4 4-4" stroke="var(--text-secondary)" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
           </svg>
         )}
-
-        {/* Upgrade CTA for locked rows */}
-        {locked && (
-          <span className="unlock-cta">Unlock →</span>
-        )}
+        {locked && <span className="unlock-cta">Unlock →</span>}
       </div>
 
-      {/* ── Expanded content ── */}
       {open && (
         <div className="section-issues">
-
-          {/* FIX 1: Non-premium user opened a locked section → show upgrade prompt */}
           {locked ? (
             <div className="section-upgrade-prompt">
               <svg width="15" height="15" viewBox="0 0 15 15" fill="none" style={{ flexShrink: 0, color: "var(--gold)" }}>
@@ -204,33 +143,23 @@ function SectionRow({
               </svg>
               <div>
                 <p className="upgrade-prompt-title">Premium feature</p>
-                <p className="upgrade-prompt-body">
-                  Upgrade to see all issues and fixes for this section.
-                </p>
-                <button
-                  className="btn btn-primary btn-sm"
-                  style={{ marginTop: "var(--space-3)" }}
-                  onClick={e => { e.stopPropagation(); onUpgrade(); }}
-                >
+                <p className="upgrade-prompt-body">Upgrade to see all issues and fixes for this section.</p>
+                <button className="btn btn-primary btn-sm" style={{ marginTop: "var(--space-3)" }}
+                  onClick={e => { e.stopPropagation(); onUpgrade(); }}>
                   Unlock Full Report →
                 </button>
               </div>
             </div>
-
           ) : section.issues.length === 0 ? (
-            /* FIX 2: Premium user, section has no issues */
             <p style={{ fontSize: "var(--text-sm)", color: "var(--success)", padding: "var(--space-3) 0" }}>
               ✓ No issues found in this section.
             </p>
-
           ) : (
-            /* FIX 3: Premium user, show all issues */
             section.issues.map((issue, i) => (
               <div key={i} className={`issue-item issue-${issue.severity}`}>
                 <div className="issue-header">
                   <span className={`issue-badge badge-${issue.severity}`}>
-                    {issue.severity === "critical" ? "Critical" :
-                     issue.severity === "warning"  ? "Warning"  : "Tip"}
+                    {issue.severity === "critical" ? "Critical" : issue.severity === "warning" ? "Warning" : "Tip"}
                   </span>
                   <span className="issue-msg">{issue.message}</span>
                 </div>
@@ -243,22 +172,19 @@ function SectionRow({
               </div>
             ))
           )}
-
         </div>
       )}
     </div>
   );
 }
 
-// ─── Top fix item ──────────────────────────────────────────────
+// ─── Top fix ──────────────────────────────────────────────────
 function TopFixItem({ fix, index, isPremium, onUpgrade }: {
   fix: ReviewIssue; index: number; isPremium: boolean; onUpgrade: () => void;
 }) {
   const locked = !isPremium;
-
   return (
-    <div
-      className={`top-fix${locked ? " top-fix-locked" : ""}`}
+    <div className={`top-fix${locked ? " top-fix-locked" : ""}`}
       onClick={locked ? onUpgrade : undefined}
       role={locked ? "button" : undefined}
     >
@@ -291,47 +217,115 @@ function TopFixItem({ fix, index, isPremium, onUpgrade }: {
   );
 }
 
-// ─── Page ────────────────────────────────────────────────────
+// ─── Fix in Builder button ────────────────────────────────────
+function FixInBuilderButton({ reviewId, data, getIdToken }: {
+  reviewId:    string | null;
+  data:        ReviewData;
+  getIdToken:  () => Promise<string | null>;
+}) {
+  const router    = useRouter();
+  const [loading, setLoading] = useState(false);
+
+  const handle = useCallback(async () => {
+    setLoading(true);
+    try {
+      // 1. Use resumeText stored in sessionStorage (put there by upload page)
+      const raw       = reviewId ? sessionStorage.getItem(`review:${reviewId}`) : null;
+      const stored    = raw ? JSON.parse(raw) : null;
+      const text: string | null = stored?.resumeText ?? data.resumeText ?? null;
+
+      if (!text || text.length < 30) {
+        toast.error("No resume text available to import. Try re-uploading.");
+        return;
+      }
+
+      // 2. Parse via AI to get structured form data
+      const token = await getIdToken();
+      if (!token) { toast.error("Session expired."); return; }
+
+      const res = await fetch("/api/ai/parse-resume", {
+        method:  "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ resumeText: text }),
+      });
+
+      let parsed: Record<string, unknown>;
+      if (res.ok) {
+        parsed = await res.json();
+      } else {
+        // Fallback: basic extraction
+        const emailMatch = text.match(/[\w.+-]+@[\w-]+\.[a-z]{2,}/i);
+        const lines      = text.split(/\r?\n/).filter(Boolean);
+        parsed = {
+          title:        (lines[0] ?? "Imported Resume").split(" ")[0] + "'s Resume",
+          personalInfo: { fullName: lines[0] ?? "", email: emailMatch?.[0] ?? "", phone: "", location: "", linkedin: "", github: "", website: "", jobTitle: "" },
+          summary: "", experience: [], education: [], skills: [], projects: [], certifications: [],
+        };
+      }
+
+      // 3. Store and navigate
+      sessionStorage.setItem("import:resume", JSON.stringify(parsed));
+      router.push("/resume/create?import=1");
+
+    } catch (err) {
+      toast.error((err as Error).message ?? "Could not open builder.");
+    } finally {
+      setLoading(false);
+    }
+  }, [reviewId, data, getIdToken, router]);
+
+  return (
+    <button
+      className={`btn btn-primary btn-sm${loading ? " btn-loading" : ""}`}
+      onClick={handle}
+      disabled={loading}
+      title="Extract text from this review and open it in the resume builder"
+    >
+      {loading ? "" : (
+        <>
+          <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
+            <path d="M2 11h9M7.5 2l3 3-3 3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
+            <path d="M10.5 5H4.5a2 2 0 00-2 2v4" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+          </svg>
+          Fix in Builder
+        </>
+      )}
+    </button>
+  );
+}
+
+// ─── Page ─────────────────────────────────────────────────────
 export default function ReviewResultsPage({
   params,
 }: {
   params: Promise<{ id: string }>;
 }) {
-  const router      = useRouter();
-  const { user, getIdToken }    = useAuth();
+  const router               = useRouter();
+  const { user, getIdToken } = useAuth();
 
   const [reviewId,  setReviewId]  = useState<string | null>(null);
   const [data,      setData]      = useState<ReviewData | null>(null);
   const [notFound,  setNotFound]  = useState(false);
   const [upgrading, setUpgrading] = useState(false);
 
-  // ── Resolve params and load data ──────────────────────────
   useEffect(() => {
     params.then(({ id }) => {
       setReviewId(id);
       const raw = sessionStorage.getItem(`review:${id}`);
       if (!raw) { setNotFound(true); return; }
-      try {
-        setData(JSON.parse(raw) as ReviewData);
-      } catch {
-        setNotFound(true);
-      }
+      try { setData(JSON.parse(raw) as ReviewData); }
+      catch { setNotFound(true); }
     });
   }, [params]);
 
-  // ── Upgrade handler ───────────────────────────────────────
   async function handleUpgrade() {
     if (!user) return;
     setUpgrading(true);
     try {
       const token = await getIdToken();
-      if (!token) {
-        alert("Session expired. Please sign in again.");
-        return;
-      }
+      if (!token) { alert("Session expired. Please sign in again."); return; }
       const res  = await fetch("/api/payments/checkout", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
+        method: "POST", headers: { Authorization: `Bearer ${token}` },
       });
       const json = await res.json();
       if (json.url) { window.location.href = json.url; return; }
@@ -343,7 +337,6 @@ export default function ReviewResultsPage({
     }
   }
 
-  // ── Not found ─────────────────────────────────────────────
   if (notFound) {
     return (
       <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: "var(--space-4)" }}>
@@ -367,82 +360,44 @@ export default function ReviewResultsPage({
   const isPremium   = data.isPremium || (data.resumeId ? (user?.unlockedResumes?.includes(data.resumeId) ?? false) : false);
   const userName    = user?.displayName?.split(" ")[0] ?? "there";
   const lockedCount = data.sections.filter(s => (s.isPremium ?? false) && !isPremium).length;
+  // Show "Fix in Builder" only when we have resume text to work with
+  const hasResumeText = !!(data.resumeText && data.resumeText.length > 30);
 
   return (
     <>
       <style>{`
         .results-page { min-height: 100vh; display: flex; flex-direction: column; }
 
-        /* ── Topbar ── */
-        .topbar {
-          position: sticky; top: 0; z-index: var(--z-sticky);
-          height: var(--nav-height);
-          display: flex; align-items: center; justify-content: space-between;
-          padding: 0 5vw;
-          background: var(--bg-overlay); backdrop-filter: blur(18px);
-          border-bottom: 1px solid var(--border);
-        }
+        .topbar { position: sticky; top: 0; z-index: var(--z-sticky); height: var(--nav-height); display: flex; align-items: center; justify-content: space-between; padding: 0 5vw; background: var(--bg-overlay); backdrop-filter: blur(18px); border-bottom: 1px solid var(--border); }
         .topbar-logo { font-family: var(--font-display); font-size: 1.3rem; font-weight: 900; color: var(--text-primary); text-decoration: none; letter-spacing: -0.02em; }
         .topbar-logo span { color: var(--gold); }
         .topbar-right { display: flex; align-items: center; gap: var(--space-4); }
 
-        /* ── Layout ── */
-        .results-body {
-          flex: 1;
-          display: grid;
-          grid-template-columns: 340px 1fr;
-          max-width: 1200px; margin: 0 auto; width: 100%;
-          padding: var(--space-8) 5vw;
-          gap: var(--space-6); align-items: start;
-        }
+        .results-body { flex: 1; display: grid; grid-template-columns: 340px 1fr; max-width: 1200px; margin: 0 auto; width: 100%; padding: var(--space-8) 5vw; gap: var(--space-6); align-items: start; }
 
-        /* ── Left panel ── */
         .left-panel { display: flex; flex-direction: column; gap: var(--space-5); position: sticky; top: calc(var(--nav-height) + var(--space-8)); }
 
-        /* Score card */
-        .score-card {
-          background: var(--bg-surface); border: 1px solid var(--border);
-          border-radius: var(--radius-lg); padding: var(--space-6);
-          animation: fade-up 0.4s var(--ease) both;
-        }
+        .score-card { background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: var(--space-6); animation: fade-up 0.4s var(--ease) both; }
         .score-greeting { font-size: var(--text-sm); color: var(--text-secondary); margin-bottom: var(--space-2); }
         .score-greeting strong { color: var(--text-primary); }
         .score-ring-wrap { display: flex; flex-direction: column; align-items: center; gap: var(--space-2); margin: var(--space-4) 0; }
         .score-label { font-size: var(--text-sm); font-weight: 600; }
 
-        /* Score bar */
         .score-bar-wrap { margin-top: var(--space-4); }
-        .score-bar-track {
-          position: relative; height: 12px; border-radius: 99px;
-          background: linear-gradient(to right, #ef4444 0%, #f97316 25%, #eab308 50%, #84cc16 75%, #22c55e 100%);
-          margin-bottom: var(--space-2);
-        }
+        .score-bar-track { position: relative; height: 12px; border-radius: 99px; background: linear-gradient(to right, #ef4444 0%, #f97316 25%, #eab308 50%, #84cc16 75%, #22c55e 100%); margin-bottom: var(--space-2); }
         .score-bar-fill { display: none; }
-        .score-bar-marker {
-          position: absolute; top: 50%; transform: translate(-50%, -50%);
-          width: 14px; height: 14px; border-radius: 50%;
-          background: #1a1a2e; border: 3px solid var(--text-primary);
-          z-index: 2;
-        }
+        .score-bar-marker { position: absolute; top: 50%; transform: translate(-50%, -50%); width: 14px; height: 14px; border-radius: 50%; background: #1a1a2e; border: 3px solid var(--text-primary); z-index: 2; }
         .score-bar-marker.top-marker { border-color: var(--gold); background: var(--gold); width: 10px; height: 10px; }
         .score-bar-labels { display: flex; align-items: center; justify-content: space-between; font-size: var(--text-xs); color: var(--text-secondary); }
         .score-bar-legend { display: flex; align-items: center; gap: var(--space-1); font-size: var(--text-xs); color: var(--text-secondary); }
         .legend-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-primary); display: inline-block; }
         .legend-dot.top { background: var(--gold); }
 
-        /* Top fixes card */
-        .fixes-card {
-          background: var(--bg-surface); border: 1px solid var(--border);
-          border-radius: var(--radius-lg); padding: var(--space-5);
-          animation: fade-up 0.4s 0.1s var(--ease) both;
-        }
+        .fixes-card { background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: var(--space-5); animation: fade-up 0.4s 0.1s var(--ease) both; }
         .fixes-title { font-size: var(--text-base); font-weight: 600; color: var(--text-primary); margin-bottom: var(--space-4); display: flex; align-items: center; justify-content: space-between; }
         .fixes-count { font-size: var(--text-xs); color: var(--text-secondary); font-weight: 400; }
 
-        .top-fix {
-          display: flex; align-items: flex-start; gap: var(--space-3);
-          padding: var(--space-3) 0; border-bottom: 1px solid var(--border);
-        }
+        .top-fix { display: flex; align-items: flex-start; gap: var(--space-3); padding: var(--space-3) 0; border-bottom: 1px solid var(--border); }
         .top-fix:last-child { border-bottom: none; }
         .top-fix-locked { cursor: pointer; }
         .top-fix-locked:hover { background: var(--bg-elevated); margin: 0 calc(-1 * var(--space-2)); padding-left: var(--space-2); padding-right: var(--space-2); border-radius: var(--radius-sm); }
@@ -455,55 +410,46 @@ export default function ReviewResultsPage({
         .blurred { filter: blur(4px); user-select: none; color: var(--text-disabled) !important; }
         .top-fix-blur { position: relative; }
 
-        /* Upgrade card */
-        .upgrade-card {
-          background: linear-gradient(135deg, var(--bg-surface), rgba(201,168,76,.06));
-          border: 1px solid var(--gold-border); border-radius: var(--radius-lg);
-          padding: var(--space-5); text-align: center;
-          animation: fade-up 0.4s 0.2s var(--ease) both;
-        }
+        .upgrade-card { background: linear-gradient(135deg, var(--bg-surface), rgba(201,168,76,.06)); border: 1px solid var(--gold-border); border-radius: var(--radius-lg); padding: var(--space-5); text-align: center; animation: fade-up 0.4s 0.2s var(--ease) both; }
         .upgrade-card h4 { color: var(--text-primary); margin-bottom: var(--space-2); font-size: var(--text-base); }
         .upgrade-card p  { font-size: var(--text-sm); color: var(--text-secondary); margin-bottom: var(--space-4); }
 
-        /* ── Right panel ── */
         .right-panel { display: flex; flex-direction: column; gap: var(--space-4); }
 
-        /* Header */
-        .results-header {
-          background: var(--bg-surface); border: 1px solid var(--border);
-          border-radius: var(--radius-lg); padding: var(--space-5);
-          display: flex; align-items: center; justify-content: space-between;
-          animation: fade-up 0.4s var(--ease) both;
-        }
+        .results-header { background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: var(--space-5); display: flex; align-items: center; justify-content: space-between; animation: fade-up 0.4s var(--ease) both; }
         .results-header-title { font-family: var(--font-display); font-size: var(--text-xl); color: var(--text-primary); font-weight: 700; }
         .results-header-meta  { font-size: var(--text-xs); color: var(--text-secondary); margin-top: 3px; }
+        .results-header-actions { display: flex; gap: var(--space-2); flex-wrap: wrap; }
 
-        /* Sections */
-        .sections-card {
-          background: var(--bg-surface); border: 1px solid var(--border);
-          border-radius: var(--radius-lg); overflow: hidden;
-          animation: fade-up 0.4s 0.1s var(--ease) both;
-        }
-        .sections-card-header {
-          padding: var(--space-4) var(--space-5);
-          border-bottom: 1px solid var(--border);
+        /* ── Fix in Builder card ── */
+        .fix-builder-card {
+          background: linear-gradient(135deg, var(--bg-surface), rgba(201,168,76,.06));
+          border: 1px solid var(--gold-border);
+          border-radius: var(--radius-lg);
+          padding: var(--space-5);
           display: flex; align-items: center; justify-content: space-between;
+          gap: var(--space-4);
+          animation: fade-up 0.4s 0.15s var(--ease) both;
         }
+        .fix-builder-left { display: flex; align-items: center; gap: var(--space-4); }
+        .fix-builder-icon {
+          width: 42px; height: 42px; flex-shrink: 0;
+          background: var(--gold-dim); border: 1px solid var(--gold-border);
+          border-radius: var(--radius-md);
+          display: flex; align-items: center; justify-content: center;
+        }
+        .fix-builder-title { font-size: var(--text-sm); font-weight: 600; color: var(--text-primary); margin-bottom: 3px; }
+        .fix-builder-sub   { font-size: var(--text-xs); color: var(--text-secondary); }
+
+        .sections-card { background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius-lg); overflow: hidden; animation: fade-up 0.4s 0.1s var(--ease) both; }
+        .sections-card-header { padding: var(--space-4) var(--space-5); border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
         .sections-card-title { font-size: var(--text-base); font-weight: 600; color: var(--text-primary); }
 
-        /* Section row */
-        .section-row {
-          border-bottom: 1px solid var(--border);
-          transition: background var(--duration-fast);
-        }
+        .section-row { border-bottom: 1px solid var(--border); transition: background var(--duration-fast); }
         .section-row:last-child { border-bottom: none; }
         .section-row.open { background: var(--bg-elevated); }
         .section-row.locked { opacity: 0.75; }
-        .section-row-header {
-          display: flex; align-items: center; gap: var(--space-3);
-          padding: var(--space-4) var(--space-5); cursor: pointer;
-          transition: background var(--duration-fast);
-        }
+        .section-row-header { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-4) var(--space-5); cursor: pointer; transition: background var(--duration-fast); }
         .section-row-header:hover { background: var(--bg-elevated); }
         .lock-icon { color: var(--text-disabled); flex-shrink: 0; }
         .section-label { font-size: var(--text-sm); color: var(--text-primary); font-weight: 500; flex: 1; }
@@ -513,55 +459,30 @@ export default function ReviewResultsPage({
         .section-score  { font-size: var(--text-sm); font-weight: 700; min-width: 28px; text-align: right; }
         .unlock-cta { font-size: var(--text-xs); color: var(--gold); font-weight: 600; white-space: nowrap; }
 
-        /* Issues */
         .section-issues { padding: var(--space-3) var(--space-5) var(--space-4); }
-        .issue-item {
-          padding: var(--space-3); border-radius: var(--radius-md);
-          margin-bottom: var(--space-2); border: 1px solid var(--border);
-          background: var(--bg-base);
-        }
+        .issue-item { padding: var(--space-3); border-radius: var(--radius-md); margin-bottom: var(--space-2); border: 1px solid var(--border); background: var(--bg-base); }
         .issue-item:last-child { margin-bottom: 0; }
         .issue-header { display: flex; align-items: flex-start; gap: var(--space-2); margin-bottom: var(--space-2); }
-        .issue-badge {
-          font-size: 0.65rem; font-weight: 700; padding: 2px 7px;
-          border-radius: 99px; white-space: nowrap; flex-shrink: 0;
-          text-transform: uppercase; letter-spacing: 0.05em;
-        }
+        .issue-badge { font-size: 0.65rem; font-weight: 700; padding: 2px 7px; border-radius: 99px; white-space: nowrap; flex-shrink: 0; text-transform: uppercase; letter-spacing: 0.05em; }
         .badge-critical   { background: var(--error-dim);   color: var(--error);   border: 1px solid rgba(248,113,113,0.2); }
-        .badge-warning    { background: var(--warning-dim); color: var(--warning); border: 1px solid rgba(251,191,36,0.2);  }
-        .badge-suggestion { background: var(--info-dim);    color: var(--info);    border: 1px solid rgba(96,165,250,0.2);  }
+        .badge-warning    { background: var(--warning-dim); color: var(--warning); border: 1px solid rgba(251,191,36,0.2); }
+        .badge-suggestion { background: var(--info-dim);    color: var(--info);    border: 1px solid rgba(96,165,250,0.2); }
         .issue-msg { font-size: var(--text-sm); color: var(--text-primary); font-weight: 500; line-height: 1.4; }
         .issue-fix { font-size: var(--text-xs); color: var(--text-secondary); display: flex; align-items: flex-start; gap: var(--space-1); line-height: 1.55; }
 
-        /* ── Upgrade prompt inside section (non-premium) ── */
-        .section-upgrade-prompt {
-          display: flex; align-items: flex-start; gap: var(--space-3);
-          padding: var(--space-4);
-          background: linear-gradient(135deg, var(--bg-base), rgba(201,168,76,.04));
-          border: 1px solid var(--gold-border); border-radius: var(--radius-md);
-        }
-        .upgrade-prompt-title {
-          font-size: var(--text-sm); font-weight: 600;
-          color: var(--gold-light); margin-bottom: var(--space-1);
-        }
-        .upgrade-prompt-body {
-          font-size: var(--text-xs); color: var(--text-secondary); line-height: 1.6;
-        }
+        .section-upgrade-prompt { display: flex; align-items: flex-start; gap: var(--space-3); padding: var(--space-4); background: linear-gradient(135deg, var(--bg-base), rgba(201,168,76,.04)); border: 1px solid var(--gold-border); border-radius: var(--radius-md); }
+        .upgrade-prompt-title { font-size: var(--text-sm); font-weight: 600; color: var(--gold-light); margin-bottom: var(--space-1); }
+        .upgrade-prompt-body  { font-size: var(--text-xs); color: var(--text-secondary); line-height: 1.6; }
 
-        /* ── Score improvement tip ── */
-        .improve-tip {
-          background: var(--bg-surface); border: 1px solid var(--border);
-          border-radius: var(--radius-lg); padding: var(--space-5);
-          animation: fade-up 0.4s 0.2s var(--ease) both;
-        }
+        .improve-tip { background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: var(--space-5); animation: fade-up 0.4s 0.2s var(--ease) both; }
         .improve-tip p { font-size: var(--text-sm); color: var(--text-secondary); line-height: 1.7; }
         .improve-tip strong { color: var(--text-primary); }
 
-        /* ── Responsive ── */
         @media (max-width: 860px) {
           .results-body { grid-template-columns: 1fr; }
           .left-panel   { position: static; }
           .mini-bar-wrap { display: none; }
+          .fix-builder-card { flex-direction: column; align-items: flex-start; }
         }
       `}</style>
 
@@ -569,8 +490,6 @@ export default function ReviewResultsPage({
       <div className="bg-grain" />
 
       <div className="results-page">
-
-        {/* ── Topbar ─────────────────────────────────────── */}
         <header className="topbar">
           <Link href="/" className="topbar-logo">Resu<span>fii</span></Link>
           <div className="topbar-right">
@@ -584,13 +503,9 @@ export default function ReviewResultsPage({
           </div>
         </header>
 
-        {/* ── Body ───────────────────────────────────────── */}
         <main className="results-body">
-
-          {/* ── Left panel ─────────────────────────────── */}
+          {/* ── Left panel ── */}
           <div className="left-panel">
-
-            {/* Score card */}
             <div className="score-card">
               <p className="score-greeting">
                 Good {new Date().getHours() < 12 ? "morning" : new Date().getHours() < 17 ? "afternoon" : "evening"},{" "}
@@ -599,9 +514,7 @@ export default function ReviewResultsPage({
               <p style={{ fontSize: "var(--text-xs)", color: "var(--text-secondary)" }}>
                 Welcome to your resume review.
               </p>
-
               <ScoreRing score={data.overallScore} />
-
               <div style={{ textAlign: "center", marginBottom: "var(--space-4)" }}>
                 <p style={{ fontSize: "var(--text-sm)", color: "var(--text-secondary)", lineHeight: 1.6 }}>
                   Your resume scored{" "}
@@ -611,11 +524,9 @@ export default function ReviewResultsPage({
                   )}
                 </p>
               </div>
-
               <ScoreBar score={data.overallScore} />
             </div>
 
-            {/* Top fixes */}
             <div className="fixes-card">
               <div className="fixes-title">
                 Top Fixes
@@ -623,25 +534,16 @@ export default function ReviewResultsPage({
                   {isPremium ? `${data.topFixes.length} issues` : `${lockedCount} locked`}
                 </span>
               </div>
-
               {data.topFixes.map((fix, i) => (
-                <TopFixItem
-                  key={i}
-                  fix={fix}
-                  index={i}
-                  isPremium={isPremium}
-                  onUpgrade={handleUpgrade}
-                />
+                <TopFixItem key={i} fix={fix} index={i} isPremium={isPremium} onUpgrade={handleUpgrade} />
               ))}
             </div>
 
-            {/* Upgrade card for free users */}
             {!isPremium && (
               <div className="upgrade-card">
                 <h4>Unlock full report</h4>
                 <p>
-                  See all {data.sections.length} section scores, every issue, and exactly
-                  how to fix them — one-time payment.
+                  See all {data.sections.length} section scores, every issue, and exactly how to fix them — one-time payment.
                 </p>
                 <button
                   className={`btn btn-primary${upgrading ? " btn-loading" : ""}`}
@@ -656,12 +558,10 @@ export default function ReviewResultsPage({
                 </p>
               </div>
             )}
-
           </div>
 
-          {/* ── Right panel ────────────────────────────── */}
+          {/* ── Right panel ── */}
           <div className="right-panel">
-
             {/* Header */}
             <div className="results-header">
               <div>
@@ -672,17 +572,41 @@ export default function ReviewResultsPage({
                   })}
                 </div>
               </div>
-              <div style={{ display: "flex", gap: "var(--space-2)" }}>
+              <div className="results-header-actions">
                 {data.resumeId && (
                   <Link href={`/resume/${data.resumeId}/edit`} className="btn btn-secondary btn-sm">
                     Edit Resume
                   </Link>
                 )}
-                <Link href="/resume/create" className="btn btn-ghost btn-sm">
+                <Link href="/resume/new" className="btn btn-ghost btn-sm">
                   New Resume
                 </Link>
               </div>
             </div>
+
+            {/* ── Fix in Builder card ── */}
+            {hasResumeText && (
+              <div className="fix-builder-card">
+                <div className="fix-builder-left">
+                  <div className="fix-builder-icon">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                      <path d="M3 17h14M10 3v10M6 9l4 4 4-4" stroke="var(--gold)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                    </svg>
+                  </div>
+                  <div>
+                    <div className="fix-builder-title">Apply fixes in the builder</div>
+                    <div className="fix-builder-sub">
+                      Import this resume into the editor — your text is pre-filled and ready to improve.
+                    </div>
+                  </div>
+                </div>
+                <FixInBuilderButton
+                  reviewId={reviewId}
+                  data={data}
+                  getIdToken={getIdToken}
+                />
+              </div>
+            )}
 
             {/* Section breakdown */}
             <div className="sections-card">
@@ -694,7 +618,6 @@ export default function ReviewResultsPage({
                     : `${data.sections.filter(s => !(s.isPremium ?? false)).length} of ${data.sections.length} visible`}
                 </span>
               </div>
-
               {data.sections.map(section => (
                 <SectionRow
                   key={section.category}
@@ -705,7 +628,6 @@ export default function ReviewResultsPage({
               ))}
             </div>
 
-            {/* Tip */}
             <div className="improve-tip">
               <svg width="16" height="16" viewBox="0 0 16 16" fill="none" style={{ marginBottom: "var(--space-2)", color: "var(--gold)" }}>
                 <circle cx="8" cy="8" r="6.5" stroke="currentColor" strokeWidth="1.2"/>
@@ -717,7 +639,6 @@ export default function ReviewResultsPage({
                 move to warnings. Once done, re-upload to get a fresh score.
               </p>
             </div>
-
           </div>
         </main>
       </div>

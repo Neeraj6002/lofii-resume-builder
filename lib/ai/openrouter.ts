@@ -32,15 +32,27 @@ const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions";
 // Paid / thinking models are last-resort fallbacks only —
 // they may prepend <think> blocks or tool calls before JSON.
 const MODELS = [
+ /*  "nvidia/nemotron-3-nano-30b:free",
+  "nvidia/nemotron-3-super:free", */
+  "minimax/minimax-m2.5:free",
+  "nousresearch/hermes-3-llama-3.1-405b:free",
+
+"google/gemma-3n-e2b-it:free",
+"google/gemma-3n-e4b-it:free",
+   "arcee-ai/trinity-large-preview:free",
+  "google/gemma-4-26b-a4b-it:free",
+  "google/gemma-4-31b-it:free",
   "meta-llama/llama-3.3-70b-instruct:free",
+  "meta-llama/llama-3.2-3b-instruct:free",
+  "liquid/lfm-2.5-1.2b-instruct:free",
   "mistralai/mistral-small-3.1-24b-instruct:free",
   "google/gemma-3-27b-it:free",
   "qwen/qwen3-14b:free",
   "deepseek/deepseek-r1-distill-llama-70b:free",
   "nvidia/llama-3.1-nemotron-70b-instruct:free",
   // Paid fallbacks (used only when all free models fail)
-  "stepfun/step-3.5-flash",
-  "qwen/qwen3.6-plus",
+  /* "stepfun/step-3.5-flash",
+  "qwen/qwen3.6-plus", */
 ];
 
 const MAX_RETRIES_PER_MODEL = 2;

@@ -35,7 +35,7 @@ export async function POST(request: Request) {
 
     // ── 4. Load user profile ─────────────────────────────────
     const profile       = await getUserProfile(uid);
-    let resumeUnlocks = profile?.credits?.resumeUnlocks ?? (profile?.credits as any)?.builder ?? 0;
+let resumeUnlocks = profile?.credits?.resumeUnlocks ?? (profile?.credits as unknown as Record<string, number>)?.builder ?? 0;
     if (resumeUnlocks === 0 && profile?.isPremium) resumeUnlocks = 1;
     const unlockedResumes = profile?.unlockedResumes ?? [];
     
@@ -57,7 +57,7 @@ export async function POST(request: Request) {
     const review = await reviewResume(resumeText);
 
     // ── 6. Gate response ─────────────────────────────────────
-    let hasReviewAccess = isDocumentUnlocked || resumeUnlocks >= 1;
+    const hasReviewAccess = isDocumentUnlocked || resumeUnlocks >= 1;
 
     const gatedReview = {
       overallScore: review.overallScore,
@@ -95,7 +95,7 @@ export async function POST(request: Request) {
           const snapData = snap.data() ?? {};
 
           // Stored count in Firestore (before virtual isPremium fallback)
-          const storedUnlocks: number = snapData?.credits?.resumeUnlocks ?? (snapData?.credits as any)?.builder ?? 0;
+        const storedUnlocks: number = snapData?.credits?.resumeUnlocks ?? (snapData?.credits as Record<string, number>)?.builder ?? 0;
           const isPremiumUser          = snapData?.isPremium === true;
           // Virtual count — at least 1 if premium (mirrors pre-check logic)
           const effectiveUnlocks       = storedUnlocks === 0 && isPremiumUser ? 1 : storedUnlocks;

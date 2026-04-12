@@ -1,9 +1,11 @@
 "use client";
 // app/(dashboard)/resume/create/page.tsx
+// Updated to read pre-filled data from sessionStorage when ?import=1
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Suspense } from "react";
 import { useAuth } from "@/hooks/useAuth";
 import { toast } from "sonner";
 import { v4 as uuid } from "uuid";
@@ -40,24 +42,52 @@ function blankSkill(): SkillItem {
 function blankProject(): ProjectItem {
   return { id: uuid(), name: "", description: "", tech: [], link: "", githubLink: "", aiGenerated: false };
 }
-function blankCert(): CertificationItem {
-  return { id: uuid(), name: "", issuer: "", date: "", credentialId: "", link: "" };
-}
 
-export default function CreateResumePage() {
-  const router = useRouter();
-  const { user } = useAuth();
+// ─── Inner page (needs useSearchParams) ──────────────────────
+function CreateResumeInner() {
+  const router       = useRouter();
+  const searchParams = useSearchParams();
+  const { user }     = useAuth();
 
-  const [title,     setTitle]    = useState("My Resume");
-  const [template,  setTemplate] = useState<ResumeTemplate>("classic");
-  const [personal,  setPersonal] = useState<PersonalInfo>(defaultPersonal);
-  const [summary,   setSummary]  = useState("");
-  const [experience,setExp]      = useState<ExperienceItem[]>([blankExp()]);
-  const [education, setEdu]      = useState<EducationItem[]>([blankEdu()]);
-  const [skills,    setSkills]   = useState<SkillItem[]>([blankSkill()]);
-  const [projects,  setProjects] = useState<ProjectItem[]>([blankProject()]);
-  const [certs,     setCerts]    = useState<CertificationItem[]>([]);
-  const [saving,    setSaving]   = useState(false);
+  const [title,      setTitle]    = useState("My Resume");
+  const [template,   setTemplate] = useState<ResumeTemplate>("classic");
+  const [personal,   setPersonal] = useState<PersonalInfo>(defaultPersonal);
+  const [summary,    setSummary]  = useState("");
+  const [experience, setExp]      = useState<ExperienceItem[]>([blankExp()]);
+  const [education,  setEdu]      = useState<EducationItem[]>([blankEdu()]);
+  const [skills,     setSkills]   = useState<SkillItem[]>([blankSkill()]);
+  const [projects,   setProjects] = useState<ProjectItem[]>([blankProject()]);
+  const [certs,      setCerts]    = useState<CertificationItem[]>([]);
+  const [saving,     setSaving]   = useState(false);
+  const [imported,   setImported] = useState(false);
+
+  // ── Load imported data if coming from /resume/new ────────────
+  useEffect(() => {
+    if (searchParams.get("import") !== "1") return;
+    const raw = sessionStorage.getItem("import:resume");
+    if (!raw) return;
+    try {
+      const data = JSON.parse(raw);
+      if (data.title)       setTitle(data.title);
+      if (data.personalInfo) setPersonal(data.personalInfo);
+      if (data.summary)     setSummary(data.summary);
+      if (Array.isArray(data.experience) && data.experience.length > 0) setExp(data.experience);
+      if (Array.isArray(data.education)  && data.education.length  > 0) setEdu(data.education);
+      if (Array.isArray(data.skills)     && data.skills.length     > 0) setSkills(data.skills);
+      if (Array.isArray(data.projects)   && data.projects.length   > 0) {
+        // Filter out blank placeholder projects
+        const realProjects = data.projects.filter((p: ProjectItem) => p.name || p.description);
+        if (realProjects.length > 0) setProjects(realProjects);
+      }
+      if (Array.isArray(data.certifications) && data.certifications.length > 0) setCerts(data.certifications);
+      setImported(true);
+      sessionStorage.removeItem("import:resume");
+      toast.success("Resume imported! Review and edit your details.");
+    } catch {
+      toast.error("Could not load imported data.");
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function handleSave() {
     if (!user) return;
@@ -71,7 +101,7 @@ export default function CreateResumePage() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${user.idToken}`,
+          Authorization:  `Bearer ${user.idToken}`,
         },
         body: JSON.stringify({
           title, template,
@@ -132,6 +162,15 @@ export default function CreateResumePage() {
         }
         .tmpl-btn:hover  { border-color: var(--border-hover); color: var(--text-primary); }
         .tmpl-btn.active { background: var(--gold-dim); border-color: var(--gold-border); color: var(--gold-light); }
+
+        .import-banner {
+          display: flex; align-items: center; gap: var(--space-3);
+          background: rgba(201,168,76,.07); border-bottom: 1px solid var(--gold-border);
+          padding: var(--space-2) var(--space-5);
+          font-size: var(--text-xs); color: var(--gold-light);
+          flex-shrink: 0;
+        }
+
         .builder-body {
           display: grid; grid-template-columns: 420px 1fr;
           flex: 1; overflow: hidden;
@@ -191,6 +230,17 @@ export default function CreateResumePage() {
           </button>
         </header>
 
+        {/* Imported data notice */}
+        {imported && (
+          <div className="import-banner">
+            <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
+              <circle cx="6.5" cy="6.5" r="5.5" stroke="currentColor" strokeWidth="1.1"/>
+              <path d="M6.5 6v3M6.5 4h.01" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round"/>
+            </svg>
+            Resume imported — review your details and click Save when ready.
+          </div>
+        )}
+
         <div className="builder-body">
           <div className="form-panel">
             <ResumeForm
@@ -226,5 +276,21 @@ export default function CreateResumePage() {
         </div>
       </div>
     </>
+  );
+}
+
+function CreateResumeFallback() {
+  return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh" }}>
+      <span className="spinner" style={{ width: 28, height: 28 }} />
+    </div>
+  );
+}
+
+export default function CreateResumePage() {
+  return (
+    <Suspense fallback={<CreateResumeFallback />}>
+      <CreateResumeInner />
+    </Suspense>
   );
 }
