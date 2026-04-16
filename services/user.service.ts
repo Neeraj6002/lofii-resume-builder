@@ -5,13 +5,21 @@
 // ============================================================
 
 // ─── Start checkout ───────────────────────────────────────────
-export async function startCheckout(idToken: string): Promise<string> {
+// Pass the current page URL so after payment, Dodo redirects
+// the user back to exactly where they were.
+export async function startCheckout(
+  idToken: string,
+  returnUrl?: string
+): Promise<string> {
   const res = await fetch("/api/payments/checkout", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${idToken}`,
     },
+    body: JSON.stringify({
+      returnUrl: returnUrl ?? (typeof window !== "undefined" ? window.location.href : undefined),
+    }),
   });
 
   const data = await res.json();
@@ -27,8 +35,6 @@ export async function startCheckout(idToken: string): Promise<string> {
 // ─── Get billing info ─────────────────────────────────────────
 export async function getBillingInfo(idToken: string): Promise<{
   isPremium: boolean;
-  // Credits remaining after purchase
-  // Each starts at 1 on payment; consumed by review / builder routes
   credits: {
     review:  number;
     builder: number;

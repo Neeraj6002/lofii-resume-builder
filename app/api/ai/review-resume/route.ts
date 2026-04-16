@@ -7,8 +7,71 @@ import { ReviewRequestSchema }             from "@/lib/schemas";
 import { checkRateLimit, reviewRateLimit } from "@/lib/ratelimit";
 import { getAdminDb }                      from "@/lib/firebase/admin";
 import { FieldValue }                      from "firebase-admin/firestore";
-import type { ReviewSection }              from "@/types";
+import type { ReviewSection, ReviewIssue } from "@/types";
 
+// ─── All 8 required categories ────────────────────────────────
+const ALL_CATEGORIES = [
+  "ats_compatibility",
+  "keywords",
+  "quantified_impact",
+  "skills",
+  "action_verbs",
+  "formatting",
+  "summary",
+  "length",
+] as const;
+
+type Category = typeof ALL_CATEGORIES[number];
+
+const CATEGORY_LABELS: Record<Category, string> = {
+  ats_compatibility: "ATS Compatibility",
+  keywords:          "Keyword Density",
+  quantified_impact: "Quantified Impact",
+  skills:            "Skills Match",
+  action_verbs:      "Action Verbs",
+  formatting:        "Formatting",
+  summary:           "Summary Quality",
+  length:            "Length & Depth",
+};
+
+// Categories that require premium to see issues/details
+const PREMIUM_CATEGORIES = new Set<Category>([
+  "keywords",
+  "ats_compatibility",
+  "quantified_impact",
+  "skills",
+  "formatting",
+  "summary",
+]);
+
+// ─── Ensure all 8 sections are always present ─────────────────
+// If the AI dropped a category, inject a placeholder so the UI
+// always renders a full 8-row breakdown.
+function ensureAllSections(sections: ReviewSection[]): ReviewSection[] {
+  // Deduplicate — keep last occurrence (mirrors openrouter.ts behaviour)
+  const map = new Map<string, ReviewSection>();
+  for (const s of sections) map.set(s.category, s);
+
+  for (const cat of ALL_CATEGORIES) {
+    if (!map.has(cat)) {
+      console.warn(`[Review] Section "${cat}" missing from AI response — injecting placeholder.`);
+      map.set(cat, {
+        category:  cat,
+        label:     CATEGORY_LABELS[cat],
+        score:     50,           // neutral mid-range placeholder
+        issues:    [{
+          severity: "warning",
+          message:  "Could not fully analyse this section",
+          fix:      "Re-upload your resume to get a complete score for this category",
+        }],
+        isPremium: PREMIUM_CATEGORIES.has(cat),
+      });
+    }
+  }
+
+  // Return in canonical order so the UI always shows sections the same way
+  return ALL_CATEGORIES.map(cat => map.get(cat)!);
+}
 
 export async function POST(request: Request) {
   try {
@@ -34,17 +97,16 @@ export async function POST(request: Request) {
     const { resumeText } = parsed.data;
 
     // ── 4. Load user profile ─────────────────────────────────
-    const profile       = await getUserProfile(uid);
-let resumeUnlocks = profile?.credits?.resumeUnlocks ?? (profile?.credits as unknown as Record<string, number>)?.builder ?? 0;
+    const profile         = await getUserProfile(uid);
+    let   resumeUnlocks   = profile?.credits?.resumeUnlocks
+      ?? (profile?.credits as unknown as Record<string, number>)?.builder
+      ?? 0;
     if (resumeUnlocks === 0 && profile?.isPremium) resumeUnlocks = 1;
     const unlockedResumes = profile?.unlockedResumes ?? [];
-    
-    // Identify the resume being reviewed.
-    // The dashboard sends resumeId in the request body; headers are used by
-    // the upload review flow. Accept both so neither path is missed.
-    const resumeId         = request.headers.get("x-resume-id")         ?? (body.resumeId         as string | undefined) ?? null;
+
+    const resumeId         = request.headers.get("x-resume-id")          ?? (body.resumeId         as string | undefined) ?? null;
     const uploadedResumeId = request.headers.get("x-uploaded-resume-id") ?? (body.uploadedResumeId as string | undefined) ?? null;
-    const targetDocId = resumeId || uploadedResumeId;
+    const targetDocId      = resumeId || uploadedResumeId;
 
     let isDocumentUnlocked = false;
     if (targetDocId && unlockedResumes.includes(targetDocId)) {
@@ -56,35 +118,50 @@ let resumeUnlocks = profile?.credits?.resumeUnlocks ?? (profile?.credits as unkn
     // ── 5. Run AI review ─────────────────────────────────────
     const review = await reviewResume(resumeText);
 
-    // ── 6. Gate response ─────────────────────────────────────
+    // ── 6. Guarantee all 8 sections are present ───────────────
+    // This is the critical fix: regardless of what the AI returned,
+    // always send back a complete 8-section array.
+    const fullSections = ensureAllSections(review.sections);
+
+    console.info(`[Review] Sections after guarantee: ${fullSections.length} (AI returned: ${review.sections.length})`);
+
+    // ── 7. Gate response ──────────────────────────────────────
     const hasReviewAccess = isDocumentUnlocked || resumeUnlocks >= 1;
+
+    const gatedSections = fullSections.map((section: ReviewSection) => {
+      const isPremiumCat = PREMIUM_CATEGORIES.has(section.category as Category);
+
+      if (!hasReviewAccess && isPremiumCat) {
+        // Free users: show the section row + score, but gate issues
+        return {
+          category:  section.category,
+          label:     section.label,
+          score:     section.score,
+          issues:    [] as ReviewIssue[],
+          isPremium: true,
+        };
+      }
+
+      return {
+        ...section,
+        isPremium: isPremiumCat,
+      };
+    });
 
     const gatedReview = {
       overallScore: review.overallScore,
       isPremium:    hasReviewAccess,
-      sections: review.sections.map((section: ReviewSection, i: number) => {
-        if (!hasReviewAccess && i >= 2) {
-          return {
-            category:  section.category,
-            label:     section.label,
-            score:     section.score,
-            issues:    [],
-            isPremium: true,
-          };
-        }
-        return { ...section, isPremium: i >= 2 };
-      }),
+      sections:     gatedSections,
       topFixes: hasReviewAccess
         ? review.topFixes
         : review.topFixes.map(() => ({
             severity: "suggestion" as const,
-            message:  "Upgrade to Premium to see this fix",
+            message:  "Upgrade to see this fix",
             fix:      "Unlock full report",
           })),
     };
 
-    // ── 7. Unlock Resume (transactional) ─────────────────────
-    // If they have access but the doc isn't unlocked yet, unlock it!
+    // ── 8. Unlock resume (transactional) ──────────────────────
     if (hasReviewAccess && !isDocumentUnlocked && targetDocId) {
       try {
         const adminDb = getAdminDb();
@@ -94,11 +171,11 @@ let resumeUnlocks = profile?.credits?.resumeUnlocks ?? (profile?.credits as unkn
           const snap     = await tx.get(userRef);
           const snapData = snap.data() ?? {};
 
-          // Stored count in Firestore (before virtual isPremium fallback)
-        const storedUnlocks: number = snapData?.credits?.resumeUnlocks ?? (snapData?.credits as Record<string, number>)?.builder ?? 0;
-          const isPremiumUser          = snapData?.isPremium === true;
-          // Virtual count — at least 1 if premium (mirrors pre-check logic)
-          const effectiveUnlocks       = storedUnlocks === 0 && isPremiumUser ? 1 : storedUnlocks;
+          const storedUnlocks: number = snapData?.credits?.resumeUnlocks
+            ?? (snapData?.credits as Record<string, number>)?.builder
+            ?? 0;
+          const isPremiumUser    = snapData?.isPremium === true;
+          const effectiveUnlocks = storedUnlocks === 0 && isPremiumUser ? 1 : storedUnlocks;
 
           const currentUnlockedResumes: string[] = snapData?.unlockedResumes ?? [];
 
@@ -108,7 +185,6 @@ let resumeUnlocks = profile?.credits?.resumeUnlocks ?? (profile?.credits as unkn
           const updates: Record<string, unknown> = {
             unlockedResumes: FieldValue.arrayUnion(targetDocId),
           };
-          // Only decrement stored counter when it's real (> 0), not the virtual premium credit
           if (storedUnlocks > 0) {
             updates["credits.resumeUnlocks"] = FieldValue.increment(-1);
           }
@@ -123,12 +199,11 @@ let resumeUnlocks = profile?.credits?.resumeUnlocks ?? (profile?.credits as unkn
       }
     }
 
-    // ── 8. Update score on built resume (if x-resume-id header) ──
+    // ── 9. Update score on built resume ───────────────────────
     if (resumeId) {
       try {
         const adminDb   = getAdminDb();
         const resumeDoc = await adminDb.collection("resumes").doc(resumeId).get();
-
         if (resumeDoc.exists && resumeDoc.data()?.userId === uid) {
           await adminDb.collection("resumes").doc(resumeId).update({
             lastReviewScore: review.overallScore,
@@ -140,12 +215,11 @@ let resumeUnlocks = profile?.credits?.resumeUnlocks ?? (profile?.credits as unkn
       }
     }
 
-    // ── 9. Update score on uploaded resume (if x-uploaded-resume-id header) ──
+    // ── 10. Update score on uploaded resume ───────────────────
     if (uploadedResumeId) {
       try {
         const adminDb     = getAdminDb();
         const uploadedDoc = await adminDb.collection("uploadedResumes").doc(uploadedResumeId).get();
-
         if (uploadedDoc.exists && uploadedDoc.data()?.userId === uid) {
           await adminDb.collection("uploadedResumes").doc(uploadedResumeId).update({
             lastReviewScore: review.overallScore,

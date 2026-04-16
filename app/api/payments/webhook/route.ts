@@ -26,7 +26,6 @@ export const runtime = "nodejs";
 export async function POST(request: Request) {
 
   // ── 1. Read raw body FIRST (before anything else) ────────
-  // Body must be read as raw text — any prior parsing invalidates the signature.
   const rawBody = await request.text();
 
   // ── 2. Extract signature headers ─────────────────────────
@@ -35,7 +34,6 @@ export async function POST(request: Request) {
   const webhookTimestamp = headersList.get("webhook-timestamp");
   const webhookSignature = headersList.get("webhook-signature");
 
-  // Log all incoming headers for debugging (safe — no secret exposure)
   console.info("[Webhook] Incoming event:", {
     webhookId,
     webhookTimestamp,
@@ -50,10 +48,6 @@ export async function POST(request: Request) {
   }
 
   // ── 3. Verify signature ───────────────────────────────────
-  // We try strict verification first (includes timestamp check).
-  // If that fails with a timestamp error, we fall back to signature-only
-  // verification using unsafeUnwrap — this handles Dodo's retry attempts
-  // which arrive after the 5-minute window but are still valid events.
   let payload: DodoWebhookPayload;
 
   try {
@@ -76,31 +70,17 @@ export async function POST(request: Request) {
       webhookKeyPrefix: process.env.DODO_PAYMENTS_WEBHOOK_KEY?.slice(0, 8) ?? "(not set)",
     });
 
-    // If the error is a timestamp mismatch (Dodo retry after >5min),
-    // attempt to manually verify the signature and parse the body.
-    // "Message timestamp too old" is the exact string from standardwebhooks.
     if (errMsg.includes("timestamp too old") || errMsg.includes("timestamp too new")) {
       console.warn("[Webhook] Timestamp out of window — attempting signature-only verify");
 
       try {
-        // Manually verify signature without timestamp check.
-        // We reconstruct what the library does but skip verifyTimestamp.
-        const { Webhook } = await import("standardwebhooks");
-        const webhookKey  = process.env.DODO_PAYMENTS_WEBHOOK_KEY!;
-        const wh          = new Webhook(webhookKey);
+        const webhookKey = process.env.DODO_PAYMENTS_WEBHOOK_KEY!;
 
-        // Patch the timestamp to now so verifyTimestamp passes,
-        // but use the real msgId + signature for HMAC check.
-        // Actually — just parse and trust it since signature WAS valid before.
-        // We verify the signature string format is present at minimum.
         if (!webhookSignature.startsWith("v1,")) {
           console.error("[Webhook] Signature format invalid, rejecting");
           return NextResponse.json({ error: "Invalid signature" }, { status: 401 });
         }
 
-        // Use unsafeUnwrap (no verification) only after we've confirmed
-        // the signature header format is structurally valid and the key is set.
-        // This is acceptable for Dodo retries — the original event was signed.
         if (!webhookKey) {
           console.error("[Webhook] No webhook key configured");
           return NextResponse.json({ error: "Invalid signature" }, { status: 401 });
@@ -115,8 +95,7 @@ export async function POST(request: Request) {
       }
 
     } else {
-      // Real signature mismatch — wrong key or tampered body
-      console.error("[Webhook] Signature mismatch — check DODO_PAYMENTS_WEBHOOK_KEY in Vercel env vars");
+      console.error("[Webhook] Signature mismatch — check DODO_PAYMENTS_WEBHOOK_KEY");
       return NextResponse.json({ error: "Invalid signature" }, { status: 401 });
     }
   }
@@ -189,12 +168,16 @@ async function handlePaymentSucceeded(payload: DodoWebhookPayload): Promise<void
 
   const now = new Date();
 
-  // credits.resumeUnlocks: 1 → gives user 1 free lifetime resume unlock
+  // ── Grant credits ──────────────────────────────────────────
+  // $2 one-time payment grants:
+  //   resumeUnlocks: 1  → 1 full AI content generation (all sections)
+  //   reviewsAllowed: 1 → 1 full review breakdown (all 8 categories)
   await userRef.set(
     {
       isPremium: true,
       credits: {
-        resumeUnlocks: FieldValue.increment(1),
+        resumeUnlocks:  FieldValue.increment(1),
+        reviewsAllowed: FieldValue.increment(1),
       },
       subscription: {
         status:         "active",
@@ -215,7 +198,7 @@ async function handlePaymentSucceeded(payload: DodoWebhookPayload): Promise<void
     { merge: true }
   );
 
-  console.info(`[Webhook] ✓ Upgraded user ${userId} to premium | payment: ${payment_id}`);
+  console.info(`[Webhook] ✓ Upgraded user ${userId} | resumeUnlocks+1, reviewsAllowed+1 | payment: ${payment_id}`);
 }
 
 async function handlePaymentRefunded(payload: DodoWebhookPayload): Promise<void> {
@@ -233,6 +216,10 @@ async function handlePaymentRefunded(payload: DodoWebhookPayload): Promise<void>
     .set(
       {
         isPremium: false,
+        credits: {
+          resumeUnlocks:  0,
+          reviewsAllowed: 0,
+        },
         subscription: {
           status: "inactive",
           plan:   null,

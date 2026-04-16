@@ -519,7 +519,6 @@ function EmptyState() {
       <h4 className="empty-title">No resumes yet</h4>
       <p className="empty-desc">Create your first resume or upload one for review.</p>
       <div style={{ display: "flex", gap: "var(--space-3)", flexWrap: "wrap", justifyContent: "center" }}>
-        {/* ── CHANGED: /resume/create → /resume/new ── */}
         <Link href="/resume/new" className="btn btn-primary">Create Resume →</Link>
         <Link href="/review/upload" className="btn btn-secondary">Upload & Review</Link>
       </div>
@@ -594,7 +593,12 @@ function DashboardContent() {
       const token = await getIdToken();
       if (!token) { toast.error("Session expired."); return; }
       const res  = await fetch("/api/payments/checkout", {
-        method: "POST", headers: { Authorization: `Bearer ${token}` },
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ returnUrl: window.location.href }),
       });
       const data = await res.json();
       if (data.url) { window.location.href = data.url; return; }
@@ -619,7 +623,7 @@ function DashboardContent() {
     );
   }
 
-  const initials = user?.displayName?.split(" ").map((w: string) => w[0]).join("").slice(0, 2).toUpperCase() ?? "U";
+  const initials   = user?.displayName?.split(" ").map((w: string) => w[0]).join("").slice(0, 2).toUpperCase() ?? "U";
   const totalCount = resumes.length + uploadedResumes.length;
 
   return (
@@ -677,13 +681,7 @@ function DashboardContent() {
         .resume-score { position: absolute; top: var(--space-4); right: var(--space-4); display: flex; align-items: center; gap: 5px; font-size: var(--text-xs); font-weight: 700; }
         .resume-template-tag { align-self: flex-start; }
 
-        .premium-star {
-          position: absolute; top: -6px; left: -6px;
-          width: 22px; height: 22px;
-          background: var(--gold-dim); border: 1px solid var(--gold-border);
-          border-radius: 50%; display: flex; align-items: center; justify-content: center;
-          box-shadow: 0 0 8px rgba(201,168,76,0.35); z-index: 1;
-        }
+        .premium-star { position: absolute; top: -6px; left: -6px; width: 22px; height: 22px; background: var(--gold-dim); border: 1px solid var(--gold-border); border-radius: 50%; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 8px rgba(201,168,76,0.35); z-index: 1; }
 
         .resume-preview { background: #fff; border-radius: var(--radius-sm); padding: 12px 10px; display: flex; flex-direction: column; gap: 4px; }
         .rp-name { height: 8px; background: #1a1a2e; border-radius: 3px; width: 50%; }
@@ -710,27 +708,8 @@ function DashboardContent() {
         .empty-title { font-size: var(--text-xl); color: var(--text-primary); }
         .empty-desc  { font-size: var(--text-sm); color: var(--text-secondary); max-width: 320px; }
 
-        .credits-widget { background: linear-gradient(135deg, var(--bg-surface) 0%, rgba(201,168,76,.07) 100%); border: 1px solid var(--gold-border); border-radius: var(--radius-lg); padding: var(--space-5) var(--space-6); margin-bottom: var(--space-8); animation: fade-up 0.4s var(--ease) both; }
-        .credits-widget-header { display: flex; align-items: center; gap: var(--space-3); margin-bottom: var(--space-4); }
-        .credits-widget-title { font-size: var(--text-sm); font-weight: 700; color: var(--gold-light); text-transform: uppercase; letter-spacing: 0.06em; }
-        .credits-widget-sub { font-size: var(--text-xs); color: var(--text-secondary); margin-top: 1px; }
-        .credits-stats { display: flex; gap: var(--space-4); flex-wrap: wrap; }
-        .credit-stat { flex: 1; min-width: 120px; background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius-md); padding: var(--space-3) var(--space-4); display: flex; flex-direction: column; gap: var(--space-1); position: relative; overflow: hidden; transition: border-color var(--duration-base); }
-        .credit-stat:hover { border-color: var(--gold-border); }
-        .credit-stat-glow { position: absolute; inset: 0; opacity: 0; background: radial-gradient(circle at 50% 0%, rgba(201,168,76,0.12), transparent 70%); transition: opacity var(--duration-base); }
-        .credit-stat:hover .credit-stat-glow { opacity: 1; }
-        .credit-stat-value { font-size: 1.6rem; font-weight: 800; line-height: 1; font-family: var(--font-display); }
-        .credit-stat-value.has-credits { color: var(--gold-light); }
-        .credit-stat-value.no-credits { color: var(--text-secondary); }
-        .credit-stat-label { font-size: var(--text-xs); color: var(--text-secondary); font-weight: 500; }
-        .credit-stat-badge { display: inline-flex; align-items: center; gap: 3px; margin-top: var(--space-1); font-size: 10px; font-weight: 600; padding: 2px 6px; border-radius: var(--radius-full); }
-        .credit-stat-badge.active { background: rgba(201,168,76,0.15); color: var(--gold-light); }
-        .credit-stat-badge.used   { background: var(--bg-surface); color: var(--text-secondary); }
-
         @media (max-width: 640px) {
           .premium-banner { flex-direction: column; align-items: flex-start; }
-          .credits-widget { padding: var(--space-4); }
-          .credits-stats  { gap: var(--space-3); }
           .dash-header    { flex-direction: column; align-items: flex-start; gap: var(--space-4); }
           .dash-actions   { width: 100%; }
           .dash-actions .btn { flex: 1; justify-content: center; }
@@ -802,16 +781,6 @@ function DashboardContent() {
                       </svg>
                       Dashboard
                     </Link>
-                    <button
-                      className="menu-item"
-                      style={{ color: "var(--gold-light)" }}
-                      onClick={() => { setMenuOpen(false); handleUpgrade(); }}
-                    >
-                      <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                        <path d="M7 1l1.53 3.09 3.41.5-2.47 2.4.58 3.41L7 8.77 3.95 10.4l.58-3.41L2.06 4.59l3.41-.5z" fill="var(--gold)" stroke="var(--gold)" strokeWidth="0.5" strokeLinejoin="round"/>
-                      </svg>
-                      {upgrading ? "Loading…" : "Get Premium — $2"}
-                    </button>
                     <button className="menu-item danger" onClick={handleSignOut}>
                       <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
                         <path d="M5 7h7M9 5l2 2-2 2M9 2H3a1 1 0 00-1 1v8a1 1 0 001 1h6" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
@@ -841,7 +810,7 @@ function DashboardContent() {
                 disabled={upgrading}
                 style={{ flexShrink: 0 }}
               >
-                {upgrading ? "" : "Upgrade to Premium →"}
+                {upgrading ? "" : "Upgrade — $2 →"}
               </button>
             </div>
           )}
@@ -860,7 +829,6 @@ function DashboardContent() {
                 </svg>
                 Upload Resume
               </Link>
-              {/* ── CHANGED: /resume/create → /resume/new ── */}
               <Link href="/resume/new" className="btn btn-primary btn-sm">
                 <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
                   <path d="M7 2v10M2 7h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>

@@ -22,9 +22,9 @@ export async function createLifetimePaymentLink(
   customerEmail: string,
   customerName:  string,
   userId:        string,
+  returnUrl:     string,
 ): Promise<string> {
   const productId = process.env.DODO_LIFETIME_PRODUCT_ID!;
-  const returnUrl = `${process.env.NEXT_PUBLIC_APP_URL}/dashboard?payment=success`;
 
   const payment = await dodoClient.payments.create({
     payment_link: true,
@@ -55,7 +55,6 @@ export async function createLifetimePaymentLink(
 }
 
 // ─── Webhook payload type ─────────────────────────────────────
-// Matches the actual shape Dodo sends for payment.succeeded
 export interface DodoWebhookPayload {
   type:        string;
   business_id: string;

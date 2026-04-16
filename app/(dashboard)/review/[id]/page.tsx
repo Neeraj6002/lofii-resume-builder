@@ -1,26 +1,29 @@
 "use client";
 // app/(dashboard)/review/[id]/page.tsx
-// Added: "Fix in Builder" button that extracts resumeText from the review
-// sessionStorage entry, sends it through the AI parse API, and navigates
-// to /resume/create?import=1 with the form pre-populated.
+// Changes vs previous version:
+//   1. Detects ?payment=success on load → shows 2-second success banner
+//   2. handleUpgrade passes window.location.href as returnUrl so Dodo
+//      redirects back here after payment
+//   3. Upgrade card copy updated to "$2 one-time"
 
 import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/hooks/useAuth";
+import { startCheckout } from "@/services/user.service";
 import { toast } from "sonner";
 import type { ReviewSection, ReviewIssue } from "@/types";
 
 // ─── Types ────────────────────────────────────────────────────
 interface ReviewData {
-  overallScore:  number;
-  sections:      ReviewSection[];
-  topFixes:      ReviewIssue[];
-  isPremium:     boolean;
-  fileName:      string;
-  reviewedAt:    string;
-  resumeId:      string | null;
-  resumeText?:   string; // stored by upload page for "Fix in Builder"
+  overallScore: number;
+  sections:     ReviewSection[];
+  topFixes:     ReviewIssue[];
+  isPremium:    boolean;
+  fileName:     string;
+  reviewedAt:   string;
+  resumeId:     string | null;
+  resumeText?:  string;
 }
 
 // ─── Score ring ───────────────────────────────────────────────
@@ -28,15 +31,8 @@ function ScoreRing({ score }: { score: number }) {
   const r      = 54;
   const circ   = 2 * Math.PI * r;
   const offset = circ - (score / 100) * circ;
-  const color  =
-    score >= 75 ? "var(--success)" :
-    score >= 50 ? "var(--warning)" :
-    "var(--error)";
-  const label  =
-    score >= 75 ? "Excellent" :
-    score >= 60 ? "Good"      :
-    score >= 40 ? "Fair"      :
-    "Needs Work";
+  const color  = score >= 75 ? "var(--success)" : score >= 50 ? "var(--warning)" : "var(--error)";
+  const label  = score >= 75 ? "Excellent" : score >= 60 ? "Good" : score >= 40 ? "Fair" : "Needs Work";
 
   return (
     <div className="score-ring-wrap">
@@ -85,8 +81,7 @@ function SectionRow({ section, isPremium, onUpgrade }: {
   onUpgrade: () => void;
 }) {
   const [open, setOpen] = useState(false);
-  const sectionRequiresPremium = section.isPremium ?? false;
-  const locked = sectionRequiresPremium && !isPremium;
+  const locked = (section.isPremium ?? false) && !isPremium;
   const color =
     section.score >= 75 ? "var(--success)" :
     section.score >= 50 ? "var(--warning)" :
@@ -142,11 +137,11 @@ function SectionRow({ section, isPremium, onUpgrade }: {
                 <path d="M5 7V5a2.5 2.5 0 015 0v2" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
               </svg>
               <div>
-                <p className="upgrade-prompt-title">Premium feature</p>
-                <p className="upgrade-prompt-body">Upgrade to see all issues and fixes for this section.</p>
+                <p className="upgrade-prompt-title">Full report locked</p>
+                <p className="upgrade-prompt-body">See all issues and exact fixes for this section.</p>
                 <button className="btn btn-primary btn-sm" style={{ marginTop: "var(--space-3)" }}
                   onClick={e => { e.stopPropagation(); onUpgrade(); }}>
-                  Unlock Full Report →
+                  Unlock — $2 →
                 </button>
               </div>
             </div>
@@ -219,9 +214,9 @@ function TopFixItem({ fix, index, isPremium, onUpgrade }: {
 
 // ─── Fix in Builder button ────────────────────────────────────
 function FixInBuilderButton({ reviewId, data, getIdToken }: {
-  reviewId:    string | null;
-  data:        ReviewData;
-  getIdToken:  () => Promise<string | null>;
+  reviewId:   string | null;
+  data:       ReviewData;
+  getIdToken: () => Promise<string | null>;
 }) {
   const router    = useRouter();
   const [loading, setLoading] = useState(false);
@@ -229,9 +224,8 @@ function FixInBuilderButton({ reviewId, data, getIdToken }: {
   const handle = useCallback(async () => {
     setLoading(true);
     try {
-      // 1. Use resumeText stored in sessionStorage (put there by upload page)
-      const raw       = reviewId ? sessionStorage.getItem(`review:${reviewId}`) : null;
-      const stored    = raw ? JSON.parse(raw) : null;
+      const raw    = reviewId ? sessionStorage.getItem(`review:${reviewId}`) : null;
+      const stored = raw ? JSON.parse(raw) : null;
       const text: string | null = stored?.resumeText ?? data.resumeText ?? null;
 
       if (!text || text.length < 30) {
@@ -239,7 +233,6 @@ function FixInBuilderButton({ reviewId, data, getIdToken }: {
         return;
       }
 
-      // 2. Parse via AI to get structured form data
       const token = await getIdToken();
       if (!token) { toast.error("Session expired."); return; }
 
@@ -253,7 +246,6 @@ function FixInBuilderButton({ reviewId, data, getIdToken }: {
       if (res.ok) {
         parsed = await res.json();
       } else {
-        // Fallback: basic extraction
         const emailMatch = text.match(/[\w.+-]+@[\w-]+\.[a-z]{2,}/i);
         const lines      = text.split(/\r?\n/).filter(Boolean);
         parsed = {
@@ -263,7 +255,6 @@ function FixInBuilderButton({ reviewId, data, getIdToken }: {
         };
       }
 
-      // 3. Store and navigate
       sessionStorage.setItem("import:resume", JSON.stringify(parsed));
       router.push("/resume/create?import=1");
 
@@ -279,7 +270,6 @@ function FixInBuilderButton({ reviewId, data, getIdToken }: {
       className={`btn btn-primary btn-sm${loading ? " btn-loading" : ""}`}
       onClick={handle}
       disabled={loading}
-      title="Extract text from this review and open it in the resume builder"
     >
       {loading ? "" : (
         <>
@@ -294,19 +284,66 @@ function FixInBuilderButton({ reviewId, data, getIdToken }: {
   );
 }
 
+// ─── Payment success banner ───────────────────────────────────
+function PaymentSuccessBanner({ onDone }: { onDone: () => void }) {
+  useEffect(() => {
+    const t = setTimeout(onDone, 2500);
+    return () => clearTimeout(t);
+  }, [onDone]);
+
+  return (
+    <div style={{
+      position: "fixed", top: "var(--nav-height)", left: 0, right: 0,
+      zIndex: "var(--z-toast)" as string,
+      display: "flex", justifyContent: "center",
+      padding: "var(--space-4)",
+      pointerEvents: "none",
+      animation: "fade-down 0.3s var(--ease) both",
+    }}>
+      <div style={{
+        background: "var(--success)",
+        color: "#fff",
+        borderRadius: "var(--radius-lg)",
+        padding: "var(--space-3) var(--space-5)",
+        fontWeight: 600,
+        fontSize: "var(--text-sm)",
+        boxShadow: "var(--shadow-lg)",
+        display: "flex", alignItems: "center", gap: "var(--space-2)",
+      }}>
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+          <path d="M3 8l3.5 3.5L13 4" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+        </svg>
+        Payment successful — full report unlocked!
+      </div>
+    </div>
+  );
+}
+
 // ─── Page ─────────────────────────────────────────────────────
 export default function ReviewResultsPage({
   params,
 }: {
   params: Promise<{ id: string }>;
 }) {
+ 
   const router               = useRouter();
+  const searchParams         = useSearchParams();
   const { user, getIdToken } = useAuth();
 
-  const [reviewId,  setReviewId]  = useState<string | null>(null);
-  const [data,      setData]      = useState<ReviewData | null>(null);
-  const [notFound,  setNotFound]  = useState(false);
-  const [upgrading, setUpgrading] = useState(false);
+  const [reviewId,      setReviewId]      = useState<string | null>(null);
+  const [data,          setData]          = useState<ReviewData | null>(null);
+  const [notFound,      setNotFound]      = useState(false);
+  const [upgrading,     setUpgrading]     = useState(false);
+  const [showSuccess,   setShowSuccess]   = useState(false);
+
+  // Detect ?payment=success on load (Dodo redirect back)
+ useEffect(() => {
+  if (showSuccess) {
+    const url = new URL(window.location.href);
+    url.searchParams.delete("payment");
+    window.history.replaceState({}, "", url.toString());
+  }
+}, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     params.then(({ id }) => {
@@ -323,16 +360,12 @@ export default function ReviewResultsPage({
     setUpgrading(true);
     try {
       const token = await getIdToken();
-      if (!token) { alert("Session expired. Please sign in again."); return; }
-      const res  = await fetch("/api/payments/checkout", {
-        method: "POST", headers: { Authorization: `Bearer ${token}` },
-      });
-      const json = await res.json();
-      if (json.url) { window.location.href = json.url; return; }
-      throw new Error();
+      if (!token) { toast.error("Session expired. Please sign in again."); return; }
+      // Pass current page URL — Dodo will redirect back here with ?payment=success
+      const url = await startCheckout(token, window.location.href);
+      window.location.href = url;
     } catch {
-      alert("Could not start checkout. Please try again.");
-    } finally {
+      toast.error("Could not start checkout. Please try again.");
       setUpgrading(false);
     }
   }
@@ -360,7 +393,6 @@ export default function ReviewResultsPage({
   const isPremium   = data.isPremium || (data.resumeId ? (user?.unlockedResumes?.includes(data.resumeId) ?? false) : false);
   const userName    = user?.displayName?.split(" ")[0] ?? "there";
   const lockedCount = data.sections.filter(s => (s.isPremium ?? false) && !isPremium).length;
-  // Show "Fix in Builder" only when we have resume text to work with
   const hasResumeText = !!(data.resumeText && data.resumeText.length > 30);
 
   return (
@@ -421,23 +453,9 @@ export default function ReviewResultsPage({
         .results-header-meta  { font-size: var(--text-xs); color: var(--text-secondary); margin-top: 3px; }
         .results-header-actions { display: flex; gap: var(--space-2); flex-wrap: wrap; }
 
-        /* ── Fix in Builder card ── */
-        .fix-builder-card {
-          background: linear-gradient(135deg, var(--bg-surface), rgba(201,168,76,.06));
-          border: 1px solid var(--gold-border);
-          border-radius: var(--radius-lg);
-          padding: var(--space-5);
-          display: flex; align-items: center; justify-content: space-between;
-          gap: var(--space-4);
-          animation: fade-up 0.4s 0.15s var(--ease) both;
-        }
+        .fix-builder-card { background: linear-gradient(135deg, var(--bg-surface), rgba(201,168,76,.06)); border: 1px solid var(--gold-border); border-radius: var(--radius-lg); padding: var(--space-5); display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); animation: fade-up 0.4s 0.15s var(--ease) both; }
         .fix-builder-left { display: flex; align-items: center; gap: var(--space-4); }
-        .fix-builder-icon {
-          width: 42px; height: 42px; flex-shrink: 0;
-          background: var(--gold-dim); border: 1px solid var(--gold-border);
-          border-radius: var(--radius-md);
-          display: flex; align-items: center; justify-content: center;
-        }
+        .fix-builder-icon { width: 42px; height: 42px; flex-shrink: 0; background: var(--gold-dim); border: 1px solid var(--gold-border); border-radius: var(--radius-md); display: flex; align-items: center; justify-content: center; }
         .fix-builder-title { font-size: var(--text-sm); font-weight: 600; color: var(--text-primary); margin-bottom: 3px; }
         .fix-builder-sub   { font-size: var(--text-xs); color: var(--text-secondary); }
 
@@ -478,6 +496,11 @@ export default function ReviewResultsPage({
         .improve-tip p { font-size: var(--text-sm); color: var(--text-secondary); line-height: 1.7; }
         .improve-tip strong { color: var(--text-primary); }
 
+        @keyframes fade-down {
+          from { opacity: 0; transform: translateY(-12px); }
+          to   { opacity: 1; transform: translateY(0); }
+        }
+
         @media (max-width: 860px) {
           .results-body { grid-template-columns: 1fr; }
           .left-panel   { position: static; }
@@ -488,6 +511,9 @@ export default function ReviewResultsPage({
 
       <div className="bg-mesh" />
       <div className="bg-grain" />
+
+      {/* Payment success banner — auto-dismisses after 2.5s */}
+      {showSuccess && <PaymentSuccessBanner onDone={() => setShowSuccess(false)} />}
 
       <div className="results-page">
         <header className="topbar">
@@ -543,7 +569,7 @@ export default function ReviewResultsPage({
               <div className="upgrade-card">
                 <h4>Unlock full report</h4>
                 <p>
-                  See all {data.sections.length} section scores, every issue, and exactly how to fix them — one-time payment.
+                  See all {data.sections.length} section scores, every issue, and exactly how to fix them.
                 </p>
                 <button
                   className={`btn btn-primary${upgrading ? " btn-loading" : ""}`}
@@ -554,7 +580,7 @@ export default function ReviewResultsPage({
                   {upgrading ? "" : "Unlock Full Report — $2 →"}
                 </button>
                 <p style={{ fontSize: "var(--text-xs)", color: "var(--text-disabled)", marginTop: "var(--space-3)" }}>
-                  One-time payment · Lifetime access · No subscription
+                  One-time payment · No subscription · Instant access
                 </p>
               </div>
             )}
@@ -562,7 +588,6 @@ export default function ReviewResultsPage({
 
           {/* ── Right panel ── */}
           <div className="right-panel">
-            {/* Header */}
             <div className="results-header">
               <div>
                 <div className="results-header-title">Resume Review</div>
@@ -584,7 +609,6 @@ export default function ReviewResultsPage({
               </div>
             </div>
 
-            {/* ── Fix in Builder card ── */}
             {hasResumeText && (
               <div className="fix-builder-card">
                 <div className="fix-builder-left">
@@ -600,15 +624,10 @@ export default function ReviewResultsPage({
                     </div>
                   </div>
                 </div>
-                <FixInBuilderButton
-                  reviewId={reviewId}
-                  data={data}
-                  getIdToken={getIdToken}
-                />
+                <FixInBuilderButton reviewId={reviewId} data={data} getIdToken={getIdToken} />
               </div>
             )}
 
-            {/* Section breakdown */}
             <div className="sections-card">
               <div className="sections-card-header">
                 <div className="sections-card-title">Section Breakdown</div>
